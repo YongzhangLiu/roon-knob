@@ -65,6 +65,48 @@ jobs:
             roon_knob_merged.bin
           retention-days: 30
 
+  # ---------------------------------------------------------------------------
+  # TEMPORARY: issue #202 optimization measurement.
+  #
+  # #202's first acceptance criterion requires DEBUG/SIZE/PERF measured on the
+  # toolchain CI actually uses, and the only authoritative way to get that is a
+  # pull_request run of the same release-v5.4 image as build-idf above. This job
+  # is independent of build-idf (no `needs`, and it never blocks it), runs only
+  # on pull_request, and MUST be deleted once the numbers are recorded in the
+  # decision record.
+  # ---------------------------------------------------------------------------
+  measure-optimization-202:
+    name: measure-optimization-202
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Measure DEBUG / SIZE / PERF
+        id: measure
+        continue-on-error: true
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: release-v5.4
+          target: esp32s3
+          path: idf_app
+          command: bash tools/measure/measure_optimization.sh
+
+      - name: Upload optimization measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: optimization-measurements
+          path: optimization-measurements/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Report harness exit status
+        if: always()
+        run: |
+          echo "measure step outcome: ${{ steps.measure.outcome }}"
+
   release:
     name: Create GitHub Release
     runs-on: ubuntu-latest

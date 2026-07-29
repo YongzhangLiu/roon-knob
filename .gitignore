@@ -9,6 +9,13 @@ sdkconfig.local
 idf_*.log
 idf_app/dependencies.lock
 
+# Temporary: issue #202 optimization measurement outputs (remove with the harness)
+optimization-measurements/
+idf_app/build-*/
+idf_app/sdkconfig.debug
+idf_app/sdkconfig.size
+idf_app/sdkconfig.perf
+
 # Node modules
 
 # Beads db
