@@ -1,6 +1,13 @@
-CONFIG_WIFI_SSID="ROON_KNOB_AP"
-CONFIG_WIFI_PASSWORD="rotary123"
-CONFIG_EXAMPLE_IPV6=0
+# Compiler optimization - chosen by measurement, not inherited from v4 (#202)
+# Measured on CI's own toolchain (ESP-IDF v5.4.4-1000-g8543b57cf15, GCC 14.2.0):
+#   DEBUG  bin 1761952 B  DIRAM 222931  IRAM 16383
+#   SIZE   bin 1613984 B  DIRAM 212259  IRAM 16383   <- smallest image, lowest DIRAM
+#   PERF   bin 1765520 B  DIRAM 219007  IRAM 16383
+# The gate in cmake/rk_release_config.cmake accepts either SIZE or PERF and rejects
+# DEBUG/NONE; this line carries the measured choice. Full table and decision rule:
+# docs/meta/decisions/2026-07-29_DECISION_EFFECTIVE_RELEASE_CONFIG.md
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
@@ -30,7 +37,6 @@ CONFIG_ESP_WIFI_MGMT_SBUF_NUM=16
 
 # Network identity - replace "espressif" with project name for NetBIOS/LLMNR
 CONFIG_LWIP_LOCAL_HOSTNAME="roon-knob"
-CONFIG_LWIP_NETIF_HOSTNAME=y
 
 # Brownout detection - lower threshold for battery operation
 # Level 4 (2.50V) allows WiFi current spikes without false triggers
@@ -82,4 +88,3 @@ CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
 # Bluetooth disabled on S3 - Bluetooth functionality moved to ESP32 chip
 # See docs/DUAL_CHIP_ARCHITECTURE.md for the dual-chip Bluetooth architecture
 CONFIG_BT_ENABLED=n
-CONFIG_LWIP_NETIF_HOSTNAME=y

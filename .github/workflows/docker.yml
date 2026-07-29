@@ -37,12 +37,43 @@ jobs:
           sed -i 's/set(PROJECT_VER ".*")/set(PROJECT_VER "${{ steps.version.outputs.version }}")/' idf_app/CMakeLists.txt
           grep PROJECT_VER idf_app/CMakeLists.txt
 
+      # Enforcement is forced ON explicitly through the action's `command` input
+      # (#202). It cannot be inherited from the environment: the CI variable does
+      # not cross into the container, so the flag has to be on the idf.py command
+      # line where it is visible in the workflow diff. The output is teed so the
+      # host steps below can assert on it; pipefail + PIPESTATUS preserve idf.py's
+      # real exit status, which `tee` would otherwise swallow.
       - name: Build with ESP-IDF
         uses: espressif/esp-idf-ci-action@v1
         with:
           esp_idf_version: release-v5.4
           target: esp32s3
           path: idf_app
+          command: >-
+            set -o pipefail;
+            idf.py -DRK_ENFORCE_RELEASE_CONFIG=ON build 2>&1 | tee rk-build.log;
+            exit ${PIPESTATUS[0]}
+
+      # This host assertion is what makes "CI cannot opt out" true rather than
+      # assumed: flipping the flag, deleting the checker, or removing the CMake
+      # call all leave the report missing, unenforced, or describing another
+      # config, and all three fail here. tools/test_check_release_config.sh proves
+      # this assertion itself has teeth (assert-the-assertion cases).
+      - name: Assert the release config gate ran, enforced, and passed (#202)
+        run: |
+          python3 idf_app/tools/assert_release_report.py \
+            --report idf_app/build/config/rk_release_config.json \
+            --config idf_app/build/config/sdkconfig.json \
+            --expect-enforced true \
+            --expect-verdict pass
+
+      # Assignments to undefined kconfig symbols are kconfgen's verdict, not
+      # ours; the checker only consumes its exact warning from the build log.
+      - name: Assert no assignments to undefined kconfig symbols (#202)
+        run: |
+          python3 idf_app/tools/check_release_config.py \
+            --config idf_app/build/config/sdkconfig.json \
+            --log idf_app/rk-build.log
 
       - name: Create merged flash image for web flashing
         run: |
@@ -65,47 +96,71 @@ jobs:
             roon_knob_merged.bin
           retention-days: 30
 
-  # ---------------------------------------------------------------------------
-  # TEMPORARY: issue #202 optimization measurement.
-  #
-  # #202's first acceptance criterion requires DEBUG/SIZE/PERF measured on the
-  # toolchain CI actually uses, and the only authoritative way to get that is a
-  # pull_request run of the same release-v5.4 image as build-idf above. This job
-  # is independent of build-idf (no `needs`, and it never blocks it), runs only
-  # on pull_request, and MUST be deleted once the numbers are recorded in the
-  # decision record.
-  # ---------------------------------------------------------------------------
-  measure-optimization-202:
-    name: measure-optimization-202
+  # Proves the checker's LOGIC and the host assertion's teeth. Host-only, no
+  # ESP-IDF, no container, seconds. Deliberately independent of build-idf so a
+  # failure here is attributable to the gate rather than to the firmware build.
+  release-config-fixtures:
+    name: release-config-fixtures
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
-      - name: Measure DEBUG / SIZE / PERF
-        id: measure
+      - name: Run release-config fixtures (#202)
+        run: idf_app/tools/test_check_release_config.sh
+
+  # The one integration negative (#202 AC 6). Proves the WIRING: that a stale
+  # sdkconfig which silently ignores the committed defaults is caught at configure
+  # time by the checker, and rejected for the stated reason. All three conditions
+  # are required -- failed step, exact checker token, and a report saying
+  # verdict:fail -- so an unrelated compile break or container hiccup cannot be
+  # mistaken for the gate firing.
+  build-stale-config:
+    name: build-stale-config
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      # Seeded BEFORE any configure. `idf.py set-target` must never be used here:
+      # it renames an existing sdkconfig to sdkconfig.old, which would silently
+      # destroy the very condition under test. The action only exports IDF_TARGET.
+      - name: Seed a stale, debug-optimized sdkconfig
+        run: |
+          printf '%s\n' \
+            'CONFIG_COMPILER_OPTIMIZATION_DEBUG=y' \
+            '# CONFIG_COMPILER_OPTIMIZATION_SIZE is not set' \
+            '# CONFIG_COMPILER_OPTIMIZATION_PERF is not set' \
+            > idf_app/sdkconfig
+          cat idf_app/sdkconfig
+
+      - name: Build with the gate enforced (expected to FAIL)
+        id: stale
         continue-on-error: true
         uses: espressif/esp-idf-ci-action@v1
         with:
           esp_idf_version: release-v5.4
           target: esp32s3
           path: idf_app
-          command: bash tools/measure/measure_optimization.sh
+          command: >-
+            set -o pipefail;
+            idf.py -DRK_ENFORCE_RELEASE_CONFIG=ON build 2>&1 | tee rk-stale.log;
+            exit ${PIPESTATUS[0]}
 
-      - name: Upload optimization measurements
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: optimization-measurements
-          path: optimization-measurements/
-          if-no-files-found: error
-          retention-days: 90
-
-      - name: Report harness exit status
-        if: always()
+      - name: Require the checker's exact verdict, not arbitrary build failure
         run: |
-          echo "measure step outcome: ${{ steps.measure.outcome }}"
+          set -euo pipefail
+          if [ "${{ steps.stale.outcome }}" != "failure" ]; then
+            echo "FAIL: seeded stale config did not fail the build (outcome=${{ steps.stale.outcome }})"
+            exit 1
+          fi
+          echo "--- required token ---"
+          grep -F 'RK-RELCFG-VIOLATION: COMPILER_OPTIMIZATION_DEBUG' idf_app/rk-stale.log
+          echo "--- required report verdict ---"
+          python3 idf_app/tools/assert_release_report.py \
+            --report idf_app/build/config/rk_release_config.json \
+            --config idf_app/build/config/sdkconfig.json \
+            --expect-enforced true \
+            --expect-verdict fail
 
   release:
     name: Create GitHub Release

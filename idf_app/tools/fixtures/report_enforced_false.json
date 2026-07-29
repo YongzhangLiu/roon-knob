@@ -1,0 +1,17 @@
+{
+  "_comment": "Fixture for the assert-the-assertion case. A report that says the gate ran but did NOT enforce. tools/assert_release_report.py MUST reject this; if it ever accepts it, CI's non-optionality claim is hollow and the fixture runner fails.",
+  "config_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "config_path": "/app/muness/roon-knob/idf_app/build/config/sdkconfig.json",
+  "defaults": [],
+  "enforced": false,
+  "exit_code": 0,
+  "invariants": [],
+  "issue": 202,
+  "logs_scanned": [],
+  "schema": "rk-release-config/1",
+  "tokens": [
+    "RK-RELCFG-OK"
+  ],
+  "undefined_symbols": [],
+  "verdict": "pass"
+}

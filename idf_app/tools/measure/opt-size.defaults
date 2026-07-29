@@ -1,5 +1,0 @@
-# Measurement fragment for issue #202 (SIZE / -Os).
-# Not part of any release configuration. Used only by measure_optimization.sh
-# to produce the DEBUG/SIZE/PERF comparison recorded in
-# docs/meta/decisions/2026-07-29_DECISION_EFFECTIVE_RELEASE_CONFIG.md.
-CONFIG_COMPILER_OPTIMIZATION_SIZE=y

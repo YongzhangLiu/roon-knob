@@ -1,0 +1,5 @@
+Loading defaults file /app/muness/roon-knob/idf_app/sdkconfig.defaults...
+warning: unknown kconfig symbol 'WIFI_SSID' assigned to '"fixture-value-must-never-be-echoed"' in /app/muness/roon-knob/idf_app/sdkconfig.defaults
+warning: unknown kconfig symbol 'LWIP_NETIF_HOSTNAME' assigned to 'y' in /app/muness/roon-knob/idf_app/sdkconfig.defaults
+warning: unknown kconfig symbol 'RK_FIXTURE_ONLY_TOKEN' assigned to '"fixture-value-must-never-be-echoed"' in /app/muness/roon-knob/idf_app/sdkconfig.defaults
+-- Configuring done

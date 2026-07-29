@@ -1,0 +1,7 @@
+Loading defaults file /app/muness/roon-knob/idf_app/sdkconfig.defaults...
+info: Choice ESP_BROWNOUT_DET_LVL_SEL has multiple active selections. The last one will be used: ESP_BROWNOUT_DET_LVL_SEL_4 .
+/app/muness/roon-knob/idf_app/sdkconfig.defaults:41 CONFIG_BROWNOUT_DET_LVL_SEL_4 was replaced with CONFIG_ESP_BROWNOUT_DET_LVL_SEL_4
+/app/muness/roon-knob/idf_app/sdkconfig.defaults:42 CONFIG_ESP32S3_BROWNOUT_DET_LVL_SEL_4 was replaced with CONFIG_ESP_BROWNOUT_DET_LVL_SEL_4
+/app/muness/roon-knob/idf_app/sdkconfig.defaults:43 CONFIG_BROWNOUT_DET_LVL was replaced with CONFIG_ESP_BROWNOUT_DET_LVL
+/app/muness/roon-knob/idf_app/sdkconfig.defaults:44 CONFIG_ESP32S3_BROWNOUT_DET_LVL was replaced with CONFIG_ESP_BROWNOUT_DET_LVL
+-- Configuring done
