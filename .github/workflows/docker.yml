@@ -64,7 +64,8 @@ jobs:
             set -e;
             idf.py build;
             grep -Fx 'CONFIG_COMPILER_OPTIMIZATION_PERF=y' sdkconfig;
-            ! grep -Fx 'CONFIG_COMPILER_OPTIMIZATION_DEBUG=y' sdkconfig
+            ! grep -Fx 'CONFIG_COMPILER_OPTIMIZATION_DEBUG=y' sdkconfig;
+            grep -Fx 'CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096' sdkconfig
 
       - name: Create merged flash image for web flashing
         run: |
