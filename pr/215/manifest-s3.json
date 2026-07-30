@@ -5,7 +5,7 @@
   "builds": [{
     "chipFamily": "ESP32-S3",
     "parts": [{
-      "path": "roon_knob_merged.bin",
+      "path": "roon_knob_merged.bin?sha=16f8c8cdd593b683d41ef7455abaa2984f08cb2a",
       "offset": 0
     }]
   }]
