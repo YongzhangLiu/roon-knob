@@ -4,7 +4,7 @@
 **Issue:** [#202](https://github.com/muness/roon-knob/issues/202) (parent [#189](https://github.com/muness/roon-knob/issues/189), program [#201](https://github.com/muness/roon-knob/issues/201), epic [#196](https://github.com/muness/roon-knob/issues/196))
 **Status:** Accepted; implemented and enforced. Optimization candidate amended to PERF after the SIZE-built Dial preview failed sustained boot.
 
-**Hardware amendment, 2026-07-30:** PR #204's published Dial/round preview at `9ef325a12d2564848f3a944d889b57e9f99ec9c7`, built with `CONFIG_COMPILER_OPTIMIZATION_SIZE=y`, entered a boot loop on the target device. That is a release-blocking failure of #203's sustained-boot check, although the observation alone does not isolate compiler optimization as the cause. The static measurements below remain valid historical evidence, but they are insufficient to choose a shippable mode. Following the staged remedy already specified by this record, the next candidate uses `CONFIG_COMPILER_OPTIMIZATION_PERF=y`; it remains blocked pending a real flash and sustained-boot test. If PERF also boot-loops, the next diagnostic is the boot log and a DEBUG control from the same source SHA—not weakening the release gate.
+**Hardware amendment, 2026-07-30:** PR #204's published Dial/round preview at `9ef325a12d2564848f3a944d889b57e9f99ec9c7`, built with `CONFIG_COMPILER_OPTIMIZATION_SIZE=y`, entered a boot loop on the target device. That is a release-blocking failure of #203's sustained-boot check, although the observation alone does not isolate compiler optimization as the cause. The static measurements below remain valid historical evidence, but they are insufficient to choose a shippable mode. The corrected candidate restores the complete working-v4 build profile rather than changing optimization alone: ESP-IDF `release-v5.5`, `CONFIG_COMPILER_OPTIMIZATION_PERF=y`, 16 MB merged-image geometry, a 4096-byte main-task stack, and PSRAM BSS placement. It remains blocked pending a real flash and sustained-boot test. If that exact candidate also boot-loops, the next diagnostic is its serial boot log and a DEBUG control from the same source SHA—not weakening the release gate.
 
 **Observed:** the host half, and reproducibly so — both suites are committed and both run in `release-config-fixtures`, so these are not one-off scratch runs:
 
@@ -408,7 +408,14 @@ Both were learned the expensive way and are cheap to honour:
 
 **An auditor must not take its expectations from the artifact it audits.** `--require-logs-read` originally checked the log-identity marker against the report's own `logs_required_markers`. If a workflow edit drops `--log-must-contain`, that list is empty, the check iterates zero times, and the assertion passes while proving nothing. CI therefore supplies `--expect-log-marker 'RK-RELCFG-VERDICT:'` from the caller side, checked against what the report says it *observed*. Fixtures pin the gap shut, including a report that is internally self-consistent about having read the wrong log.
 
-### `ESPTOOLPY_FLASHSIZE` = 16MB vs the 8MB merge — direction deferred, value pinned
+### `ESPTOOLPY_FLASHSIZE` = 16MB vs the 8MB merge — historical decision trail
+
+**Resolution amendment, 2026-07-30:** the corrected PR #204 candidate uses 16 MB
+for both the resolved configuration and `esptool merge-bin`, matching the working
+v4 build profile. This removes the in-tree 16/8 MB disagreement. It does not
+substitute for #193 hardware identity evidence or #203's physical sustained-boot
+test. The discussion below is retained as the decision trail that identified the
+disagreement and the full edit surface.
 
 `sdkconfig.defaults` declares `CONFIG_ESPTOOLPY_FLASHSIZE="16MB"` while `.github/workflows/docker.yml`'s `esptool merge-bin` step passes `--flash-size 8MB`. That disagreement is real, and it belongs to **#203** (with #193 for hardware identity).
 

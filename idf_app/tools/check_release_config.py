@@ -135,10 +135,8 @@ TOKEN_NOLOG = "RK-RELCFG-NOLOG"
 TOKEN_NOREPORT = "RK-RELCFG-NOREPORT"
 TOKEN_USAGE = "RK-RELCFG-USAGE"
 
-# kconfgen's own wording, from esp-idf-kconfig's defaults-loading path. Verified
-# byte-identical across every release the release-v5.4 constraint
-# (esp-idf-kconfig>=2.0.2,<3.0.0) can resolve to, and observed verbatim in the
-# #202 measurement logs produced by the CI image. The value is deliberately NOT
+# kconfgen's own wording, from esp-idf-kconfig's defaults-loading path. Covered
+# by committed fixtures and observed in the CI image. The value is deliberately NOT
 # captured: it may be a credential.
 KCONFGEN_UNKNOWN_RE = re.compile(r"warning: unknown kconfig symbol '([A-Za-z0-9_]+)' assigned to ")
 
@@ -168,22 +166,13 @@ BOOL_INVARIANTS = [
     ("FREERTOS_USE_TRACE_FACILITY", False, "debug-only scheduler bookkeeping"),
 ]
 
-# Pins the flash size at the value sdkconfig.defaults currently declares (locate
-# it by symbol, CONFIG_ESPTOOLPY_FLASHSIZE, not by line number). This is not
-# neutrality about 8MB vs 16MB: the resolved value is enforced, so a build that
-# resolves to any other size fails the gate. What #202 defers to #203 is the
-# correct direction for this device, and it touches no image header. Changing
-# direction is an edit, not merely a decision, and it reaches further than this
-# expectation: at minimum sdkconfig.defaults, the fixture corpus, the suite case
-# that pins RK-RELCFG-VIOLATION: ESPTOOLPY_FLASHSIZE, docker.yml's merge-bin
-# --flash-size argument and its run-summary caveats, and the docs. Do not treat
-# that sentence as the list -- re-derive the surface with the command in the
-# ADR's ESPTOOLPY_FLASHSIZE section, whose reviewed output is canonical.
-# One trap first: wrong_flashsize.json's wrong value IS 8MB, so an 8MB decision
-# inverts that fixture rather than editing it.
+# Pins the flash size used by the known-working v4 profile. The effective config,
+# CI merge command, and operator instructions all use 16MB; any other resolved
+# value fails. This still does not claim a binary boots -- sustained boot remains
+# a hardware test.
 STRING_INVARIANTS = [
     ("ESPTOOLPY_FLASHSIZE", "16MB",
-     "must match the flash size the committed defaults declare; direction is #203"),
+     "must match the known-working v4 build and merged-image geometry"),
 ]
 
 

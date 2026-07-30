@@ -59,11 +59,10 @@ CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
 ```
 
-The ESP32-S3-Knob has 16MB flash. This enables the full partition layout including OTA slots.
-
-**Known open disagreement:** the merged flash image CI builds for web flashing passes `esptool merge-bin --flash-size 8MB`, which does not match the 16MB declared here. The release config gate (see [Release Config Gate](#release-config-gate-202)) **pins** the resolved configuration at the `"16MB"` declared above — a build that resolves to any other flash size fails the gate — and **defers the correct direction** to [#203](https://github.com/muness/roon-knob/issues/203). It is not neutral about the value, only about which value is right for this device. The gate reads no image header, so a passing config verdict says nothing about image geometry.
-
-So if #203 decides 8MB, that is an **edit and not merely a decision**, and it is a coherent multi-place one — reaching well past the two lines above, into the checker and its comment, the fixture corpus, the committed suite that pins the violation token, the `merge-bin` invocation that produces the 8MB image, both CI run-summary caveats, the manual flashing guide, this page and the decision record. Do not treat that sentence as the list. **Re-derive the surface with the command in the decision record's [`ESPTOOLPY_FLASHSIZE` section](../meta/decisions/2026-07-29_DECISION_EFFECTIVE_RELEASE_CONFIG.md#esptoolpy_flashsize--16mb-vs-the-8mb-merge--direction-deferred-value-pinned), whose reviewed output is canonical** — read the categories and the judgement there rather than trusting a second copy here, because a duplicated list is how an undercount survives, and three revisions of that list were short before authority moved to the command. One trap is worth carrying inline so nobody starts without it: **`tools/fixtures/wrong_flashsize.json`'s wrong value *is* `"8MB"`**, so flipping the expectation inverts that fixture instead of updating it — it must be re-pointed at a genuinely wrong value, not re-valued and not deleted. The suite goes loudly red on the flip, and the cheapest-looking repair (relaxing or dropping the case) silently removes negative coverage.
+The ESP32-S3-Knob has 16MB flash. The committed defaults, CI build, merged
+web-flasher image, and manual merge command all use 16MB, matching the
+known-working v4 profile. The release config gate pins the resolved value so
+those inputs cannot drift silently.
 
 ### PSRAM Configuration
 
@@ -75,6 +74,7 @@ CONFIG_SPIRAM_BOOT_INIT=y
 CONFIG_SPIRAM_USE_MALLOC=y
 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
 CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
 ```
 
 | Option | Purpose |
@@ -85,6 +85,7 @@ CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
 | `USE_MALLOC` | Include PSRAM in heap |
 | `ALWAYSINTERNAL=16384` | Allocations <16KB use internal RAM |
 | `TRY_ALLOCATE_WIFI_LWIP` | Let WiFi/TCP use PSRAM |
+| `ALLOW_BSS_SEG_EXTERNAL_MEMORY` | Allow eligible static buffers in PSRAM, matching the working v4 profile |
 
 PSRAM is used for large buffers like album artwork (360×360×2 = 259KB).
 
@@ -205,7 +206,10 @@ The gate is `idf_app/cmake/rk_release_config.cmake`, the checker is `idf_app/too
 
 Release builds must be optimized (exactly one of `CONFIG_COMPILER_OPTIMIZATION_SIZE` / `_PERF`, never `_DEBUG` / `_NONE`), must keep PSRAM and the custom partition table, must keep assertions enabled, and must not enable debug-only facilities (gdbstub panic handler, debug stubs, heap poisoning/tracing, FreeRTOS trace).
 
-The committed default is currently **SIZE**, chosen by measurement. The gate accepts either optimized mode on purpose: switching to `CONFIG_COMPILER_OPTIMIZATION_PERF=y` is a one-line change to `sdkconfig.defaults` and needs no change to the gate, its fixtures, the CI workflow, or the decision record.
+The committed default is currently **PERF**, matching the working v4 profile after
+the SIZE-built PR preview boot-looped on the Dial. The gate accepts either
+optimized mode, but neither mode is considered shippable until its exact artifact
+passes the hardware checks in #203.
 
 ### Reading the output
 
@@ -228,7 +232,10 @@ The gate also writes `build/config/rk_release_config.json` on every configure, e
 
 ### What a pass does *not* mean
 
-`RK-RELCFG-OK` is a verdict about the **resolved Kconfig configuration**, not about the flash image. In particular the gate checks that the configuration declares `CONFIG_ESPTOOLPY_FLASHSIZE="16MB"` — matching the committed defaults — but it does not read or validate any image header. The merged image CI publishes for web flashing is currently built with `esptool merge-bin --flash-size 8MB`, so that disagreement is real and open pending [#203](https://github.com/muness/roon-knob/issues/203). Both CI run summaries state this caveat inline, so a green gate table is not mistaken for a validated image. Image geometry, partition-fits-flash and size-headroom checks are #203's scope, not this gate's.
+`RK-RELCFG-OK` is a verdict about the **resolved Kconfig configuration**, not a
+hardware boot test. The gate checks that the configuration declares 16MB and CI
+also merges the image as 16MB, but sustained boot and runtime behavior still
+require target-device validation.
 
 ### Normal recovery — no escape hatch needed
 
@@ -247,7 +254,7 @@ If the message is `RK-RELCFG-VIOLATION: COMPILER_OPTIMIZATION_DEBUG`, option 2 i
 
 ### If it fails on a symbol nobody touched
 
-Several invariants pin values ESP-IDF supplies as its own defaults, over the mutable `release-v5.4` tag. If one of those flips upstream, the gate goes red naming a symbol no one in this repo changed. **That is drift detection working, not a broken gate**, and the response is a short procedure rather than an unblock:
+Several invariants pin values ESP-IDF supplies as its own defaults, over the mutable `release-v5.5` tag. If one of those flips upstream, the gate goes red naming a symbol no one in this repo changed. **That is drift detection working, not a broken gate**, and the response is a short procedure rather than an unblock:
 
 1. **Remeasure and review** — find what the value is now and why it changed, reading the symbol's declaration at the IDF commit CI actually resolved.
 2. **Decide whether the new upstream default is right for this device.** This is a product judgement and needs review.

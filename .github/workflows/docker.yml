@@ -54,7 +54,7 @@ jobs:
       - name: Build with ESP-IDF
         uses: espressif/esp-idf-ci-action@v1
         with:
-          esp_idf_version: release-v5.4
+          esp_idf_version: release-v5.5
           target: esp32s3
           path: idf_app
           command: >-
@@ -220,14 +220,12 @@ jobs:
           # exactly the run where a reader is most likely to misread the
           # summary. Duplicated verbatim in the `release` job's summary because
           # the two jobs cannot share code; keep them in step.
-          # See the ADR's ESPTOOLPY_FLASHSIZE section.
+          # Match the known-working v4 profile end-to-end. This is still not a
+          # substitute for a real sustained-boot hardware check.
           out += [
-              "> **This is a configuration verdict, not image geometry.** The gate checks "
-              "IDF's resolved Kconfig configuration against release policy. It does not "
-              'validate flash image layout: `sdkconfig.defaults` declares '
-              '`CONFIG_ESPTOOLPY_FLASHSIZE="16MB"` while the merged image published by '
-              "this workflow is built with `esptool merge-bin --flash-size 8MB`. That "
-              "disagreement is real, known, and unresolved pending #203.",
+              "> **Hardware validation is still required.** The resolved configuration and "
+              "the merged image both use the known-working v4 16MB geometry. The config "
+              "gate does not prove that the image boots on the physical device.",
               "",
           ]
 
@@ -241,7 +239,7 @@ jobs:
           pip install esptool
           esptool --chip esp32s3 merge-bin \
             -o roon_knob_merged.bin \
-            --flash-mode dio --flash-freq 80m --flash-size 8MB \
+            --flash-mode dio --flash-freq 80m --flash-size 16MB \
             0x0 idf_app/build/bootloader/bootloader.bin \
             0x8000 idf_app/build/partition_table/partition-table.bin \
             0xd000 idf_app/build/ota_data_initial.bin \
@@ -436,7 +434,7 @@ jobs:
         continue-on-error: true
         uses: espressif/esp-idf-ci-action@v1
         with:
-          esp_idf_version: release-v5.4
+          esp_idf_version: release-v5.5
           target: esp32s3
           path: idf_app
           command: >-
@@ -510,7 +508,7 @@ jobs:
         id: unenforced
         uses: espressif/esp-idf-ci-action@v1
         with:
-          esp_idf_version: release-v5.4
+          esp_idf_version: release-v5.5
           target: esp32s3
           path: idf_app
           command: >-
@@ -615,15 +613,12 @@ jobs:
           # Same static caveat as build-idf's summary, and it matters most here:
           # this is the table someone reads when asking "what did v1.x.y ship?",
           # so a green config verdict must not be mistaken for a validated flash
-          # image while the 16MB/8MB disagreement is open. Kept in step with the
+          # image before hardware validation. Kept in step with the
           # copy in build-idf.
           out += [
-              "> **This is a configuration verdict, not image geometry.** The gate checks "
-              "IDF's resolved Kconfig configuration against release policy. It does not "
-              'validate flash image layout: `sdkconfig.defaults` declares '
-              '`CONFIG_ESPTOOLPY_FLASHSIZE="16MB"` while the merged image published by '
-              "this workflow is built with `esptool merge-bin --flash-size 8MB`. That "
-              "disagreement is real, known, and unresolved pending #203.",
+              "> **Hardware validation is still required.** The resolved configuration and "
+              "the merged image both use the known-working v4 16MB geometry. The config "
+              "gate does not prove that the image boots on the physical device.",
               "",
           ]
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
