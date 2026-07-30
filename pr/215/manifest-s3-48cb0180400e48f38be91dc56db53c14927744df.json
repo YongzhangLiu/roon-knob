@@ -1,0 +1,12 @@
+{
+  "name": "Roon Knob (PR #215 Preview)",
+  "version": "pr-215",
+  "new_install_prompt_erase": true,
+  "builds": [{
+    "chipFamily": "ESP32-S3",
+    "parts": [{
+      "path": "roon_knob_merged.bin?sha=48cb0180400e48f38be91dc56db53c14927744df",
+      "offset": 0
+    }]
+  }]
+}
