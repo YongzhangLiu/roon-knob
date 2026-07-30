@@ -329,10 +329,12 @@ jobs:
     # Also an initial ceiling. Two SEQUENTIAL container runs share one image pull:
     # run 1 aborts at the gate within seconds (its failing target has no
     # dependencies, so ninja stops almost immediately and compiles almost
-    # nothing), which means run 2 is effectively a full ~3-minute build rather
-    # than an incremental one. 60 is deliberately looser than build-idf's 30
-    # because two runs and a cold pull are serialised here. Revisit with the wall
-    # time from the first real run (see the ADR).
+    # nothing), which means run 2 is effectively a full build rather than an
+    # incremental one. Exact-head run 30524500149 observed 3m38s here versus
+    # 3m45s for build-idf, so the serial pair has not measured slower in practice.
+    # 60 remains a deliberately conservative failure ceiling for cold-pull and
+    # runner variance, not a claim that the job takes twice as long. Tighten it
+    # after enough runs establish the variance (see the ADR).
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -730,10 +732,13 @@ jobs:
   deploy-pr-preview:
     name: Deploy PR Preview
     runs-on: ubuntu-latest
-    # Same three proof jobs as `release`, deliberately identical (#207): a preview
-    # is flashed to real hardware by whoever opens the PR link, so it should not
-    # come from a tree whose checker logic is broken (release-config-fixtures) OR
-    # whose proof that the gate actually BLOCKS is failing (build-stale-config).
+    # Same three prerequisite jobs as `release`, deliberately identical (the
+    # job-graph decision in #207): a preview is flashed to real hardware by whoever
+    # opens the PR link, so it should not come from a tree whose checker logic is
+    # broken (release-config-fixtures) OR whose proof that the gate actually BLOCKS
+    # is failing (build-stale-config). This is prerequisite parity, not complete
+    # artifact-validation parity: `release` re-asserts the downloaded report while
+    # this job does not yet; #210 owns that caller-workflow gap.
     # An earlier revision needed only the first two, on the grounds that the
     # container-heavy job would delay every preview -- but build-stale-config
     # already runs in every triggered workflow, including every pull-request run,

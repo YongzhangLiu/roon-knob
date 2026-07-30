@@ -11,14 +11,17 @@ enforced, and really passed -- over the same config file the build resolved.
 
 The claim stops exactly there. It is deliberately NOT "CI cannot opt out":
 
-* **Publication is gated**, by a real in-repo dependency: ``release`` *and*
-  ``deploy-pr-preview`` both declare
+* **Publication eligibility is gated**, by a real in-repo dependency: ``release``
+  *and* ``deploy-pr-preview`` both declare
   ``needs: [build-idf, release-config-fixtures, build-stale-config]``, so any one
   of the three proof jobs red or skipped stops both a published firmware asset and
   a flashable preview. An earlier revision of this docstring described an
   asymmetry -- the preview path needing only two of the three, so a red
   ``build-stale-config`` alone stopped a release but not a preview. That gap is
-  closed; the two lists are now identical.
+  closed; the two prerequisite lists are now identical. This is job-graph parity,
+  not full artifact-validation parity: ``release`` later re-asserts the downloaded
+  report before publishing, while ``deploy-pr-preview`` does not. #210 tracks that
+  caller-workflow gap.
 * **Merging is not gated.** Branch protection on ``master`` currently defines no
   required status checks, so a maintainer can merge with every #202 job red.
   Nothing in this file, or anywhere in this tree, changes that.
