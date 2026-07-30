@@ -39,12 +39,34 @@ jobs:
           sed -i 's/set(PROJECT_VER ".*")/set(PROJECT_VER "${{ steps.version.outputs.version }}")/' idf_app/CMakeLists.txt
           grep PROJECT_VER idf_app/CMakeLists.txt
 
+      # Component downloads are deterministic because dependencies.lock is
+      # committed. Do not cache build/: it contains generated sdkconfig, CMake
+      # state, and firmware that must be regenerated for the checked-out SHA.
+      - name: Restore ESP-IDF managed components
+        uses: actions/cache@v5
+        with:
+          path: idf_app/managed_components
+          key: ${{ runner.os }}-esp-idf-v5.5-components-${{ hashFiles('idf_app/dependencies.lock') }}
+
+      # The IDF image already enables ccache. Restoring it by prefix lets source
+      # changes reuse prior object compilation while a distinct SHA key saves the
+      # updated cache after each successful build.
+      - name: Restore ESP-IDF compiler cache
+        uses: actions/cache@v5
+        with:
+          path: .ci/ccache
+          key: ${{ runner.os }}-esp-idf-v5.5-ccache-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-esp-idf-v5.5-ccache-
+
       - name: Build with ESP-IDF
         uses: espressif/esp-idf-ci-action@v1
         with:
           esp_idf_version: release-v5.5
           target: esp32s3
           path: idf_app
+          extra_docker_args: >-
+            -e CCACHE_DIR=/app/${{ github.repository }}/.ci/ccache
           command: >-
             set -e;
             idf.py build;
@@ -233,7 +255,10 @@ jobs:
           EOF
 
           # Create PR flash page from template
-          sed "s/{{PR_NUMBER}}/${PR_NUM}/g" web/flash-pr.html > pr-preview/flash.html
+          sed \
+            -e "s/{{PR_NUMBER}}/${PR_NUM}/g" \
+            -e "s|manifest-s3.json|manifest-s3.json?sha=${BUILD_SHA}|g" \
+            web/flash-pr.html > pr-preview/flash.html
 
           echo "PR preview contents:"
           ls -la pr-preview/
