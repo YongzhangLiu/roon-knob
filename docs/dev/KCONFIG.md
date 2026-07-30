@@ -191,6 +191,64 @@ rm sdkconfig
 idf.py reconfigure
 ```
 
+## Release Config Gate (#202)
+
+Because `sdkconfig` outranks `sdkconfig.defaults` (see above), a stale `sdkconfig` can silently ship a debug build. A configure-time gate therefore validates IDF's **resolved** configuration — `build/config/sdkconfig.json`, not the defaults file — every time you configure.
+
+The gate is `idf_app/cmake/rk_release_config.cmake`, the checker is `idf_app/tools/check_release_config.py`, and the full rationale is in [the decision record](../meta/decisions/2026-07-29_DECISION_EFFECTIVE_RELEASE_CONFIG.md).
+
+### What it enforces
+
+Release builds must be optimized (exactly one of `CONFIG_COMPILER_OPTIMIZATION_SIZE` / `_PERF`, never `_DEBUG` / `_NONE`), must keep PSRAM and the custom partition table, must keep assertions enabled, and must not enable debug-only facilities (gdbstub panic handler, debug stubs, heap poisoning/tracing, FreeRTOS trace). The committed default is **SIZE**, chosen by measurement.
+
+### Reading the output
+
+Every verdict is a stable `RK-RELCFG-*` token, so a failure always says *why*:
+
+| Token | Exit | Meaning |
+|---|---|---|
+| `RK-RELCFG-OK` | 0 | all invariants hold |
+| `RK-RELCFG-VIOLATION: <SYMBOL>` | 2 | the resolved config breaks that invariant |
+| `RK-RELCFG-NOCONFIG` | 3 | `sdkconfig.json` missing or unparseable |
+| `RK-RELCFG-UNDEFINED: <SYMBOL>` | 4 | an invariant symbol vanished, or kconfgen reported an assignment to an unknown symbol |
+| `RK-RELCFG-NOLOG` | 5 | a log was requested but is absent/empty/not the gate's own |
+| `RK-RELCFG-NOREPORT` | 6 | the JSON report could not be written |
+| `RK-RELCFG-USAGE` | 64 | bad invocation (including a flag given an empty value) |
+
+The gate also writes `build/config/rk_release_config.json` on every configure, enforced or not, and CI uploads it with the firmware.
+
+### Normal recovery — no escape hatch needed
+
+The gate defers failure to build time rather than aborting configure, precisely so that both recovery paths keep working:
+
+```bash
+# 1. Fix it interactively - menuconfig still opens from a violating tree
+idf.py menuconfig
+
+# 2. Or re-derive the config from the committed defaults (the usual fix)
+rm sdkconfig
+idf.py build
+```
+
+If the message is `RK-RELCFG-VIOLATION: COMPILER_OPTIMIZATION_DEBUG`, option 2 is almost certainly what you want: your `sdkconfig` predates the current defaults.
+
+### Local-only escape hatch
+
+```bash
+idf.py -DRK_ENFORCE_RELEASE_CONFIG=OFF build
+```
+
+This suppresses only the **failure**. The checker still runs, the report is still written with `enforced: false`, and a multi-line `*** RELEASE CONFIG INVARIANTS NOT ENFORCED ***` banner is printed on every configure.
+
+Two things to know before using it:
+
+- **It is a CMake cache variable, so it persists** for every later build in that build directory, with no further mention on the command line. If you are unsure whether a local binary was gated, grep the build log for that banner, or `rm -rf build` to reset.
+- **CI cannot use it.** The workflow passes `-DRK_ENFORCE_RELEASE_CONFIG=ON` explicitly and then asserts the report on the host, so an artifact built with enforcement off cannot be published.
+
+Prefer `rm sdkconfig` over the hatch. The hatch exists for the case where you deliberately want a debug-optimized local build (`CONFIG_COMPILER_OPTIMIZATION_DEBUG=y` for stepping through code), not as a way past an inconvenient message.
+
+Note that `idf.py app` and `idf.py app-flash` build the app target directly and bypass the gate; `idf.py build` and `idf.py flash` do not.
+
 ## Development vs Production
 
 ### Development Build

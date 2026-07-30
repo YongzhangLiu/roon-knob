@@ -51,8 +51,17 @@ Code  Token                       Meaning
                                   required by ``--log-must-contain``
 6     ``RK-RELCFG-NOREPORT``      a report was *requested* via ``--report`` but
                                   could not be written
-64    ``RK-RELCFG-USAGE``         bad invocation (distinct from every verdict)
+64    ``RK-RELCFG-USAGE``         bad invocation, including any flag supplied with
+                                  an empty value (distinct from every verdict)
 ===== =========================== =============================================
+
+**Absent flag vs empty value.** Omitting ``--report`` / ``--log`` means the
+artifact or determination was not requested, and that is legitimate. Supplying
+either with an *empty string* is a wiring bug — it is how a deleted or reordered
+"define the path" CI step presents itself — and is rejected as a usage error
+rather than silently treated as "not requested". Likewise
+``--log-must-contain`` without a non-empty ``--log`` can only pass vacuously, so
+it is a usage error too.
 
 **Precedence, when more than one condition holds:**
 
@@ -342,6 +351,28 @@ def main(argv: list[str]) -> int:
     parser.error = _usage_error  # type: ignore[assignment]
 
     args = parser.parse_args(argv)
+
+    # An explicitly supplied EMPTY value is a wiring bug, not a request for
+    # nothing. `--report ""` used to be falsy, so no report was requested, none
+    # was written, and the checker printed RK-RELCFG-OK -- reachable in CI simply
+    # by deleting or reordering the step that defines the path variable, since
+    # `bash -e` without `-u` leaves it empty. Absent flag means "not requested";
+    # empty value means "the caller tried to request something and failed".
+    for flag, values in (("--config", [args.config]),
+                         ("--report", [args.report] if args.report is not None else []),
+                         ("--log", args.log),
+                         ("--log-must-contain", args.log_must_contain),
+                         ("--defaults", args.defaults)):
+        for value in values:
+            if value is not None and not str(value).strip():
+                _usage_error("%s was supplied with an empty value; omit the flag entirely "
+                             "if it is not requested" % flag)
+
+    # A marker requirement with nothing to match it against can only pass
+    # vacuously, which is the shape of every fail-open closed in this tool.
+    if args.log_must_contain and not args.log:
+        _usage_error("--log-must-contain requires at least one non-empty --log to match "
+                     "against")
 
     lines: list[str] = []
     tokens: list[str] = []

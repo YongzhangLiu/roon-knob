@@ -102,13 +102,19 @@ jobs:
       # asked of it: if a future edit drops --log-must-contain above, that list is
       # empty and any check driven from it passes by iterating nothing. The
       # expectation therefore has to come from the caller.
+      # --expect-enforced/--expect-verdict are deliberately `any` here. This report
+      # was produced by the previous step in this same job, so asserting that it
+      # says `enforced: true` would only re-read this job's own input -- circular,
+      # and proving nothing. The verdict of that scan is already enforced by the
+      # step's exit code. What is worth asserting is the evidence the caller did
+      # NOT supply: that a log was really read, and that it was the gate's own log.
       - name: Assert the undefined-symbol scan actually read the build log (#202)
         run: |
           python3 idf_app/tools/assert_release_report.py \
             --report "$RK_LOG_SCAN_REPORT" \
             --config idf_app/build/config/sdkconfig.json \
-            --expect-enforced true \
-            --expect-verdict pass \
+            --expect-enforced any \
+            --expect-verdict any \
             --require-logs-read \
             --expect-log-marker 'RK-RELCFG-VERDICT:'
 
@@ -118,25 +124,56 @@ jobs:
       # instead of from someone's recollection. No firmware behaviour is involved:
       # the digest is of IDF's resolved config file, computed on the host, and #202
       # adds no firmware-reported digest (see the ADR's #203 handoff).
+      # if: always() so the runs where evidence matters most -- the failing ones --
+      # still publish what the gate saw. This cannot mask an earlier failure: a
+      # failed step already failed the job, and always() only adds this step, it
+      # does not reset the job status. For the same reason the step is tolerant of
+      # a missing report (a build that died before configure never wrote one) and
+      # says so instead of erroring: the requirement that a *successful* build
+      # produce a report is enforced by the assertion steps above, which do not
+      # carry always().
       - name: Publish release config evidence to the run summary (#202)
+        if: always()
         run: |
           python3 - <<'PY'
           import json, os
-          with open("idf_app/build/config/rk_release_config.json", encoding="utf-8") as fh:
-              r = json.load(fh)
-          rows = [
-              ("verdict", r.get("verdict")),
-              ("enforced", json.dumps(r.get("enforced"))),
-              ("config digest", r.get("config_digest")),
-              ("tokens", " ".join(r.get("tokens") or [])),
-              ("run", "%s run %s attempt %s" % (os.environ.get("GITHUB_REPOSITORY"),
-                                                os.environ.get("GITHUB_RUN_ID"),
-                                                os.environ.get("GITHUB_RUN_ATTEMPT"))),
-              ("commit", os.environ.get("GITHUB_SHA")),
-          ]
-          out = ["### Release config gate (#202)", "", "| field | value |", "|---|---|"]
-          out += ["| %s | `%s` |" % (k, v) for k, v in rows]
-          out.append("")
+
+          path = "idf_app/build/config/rk_release_config.json"
+          out = ["### Release config gate (#202)", ""]
+          if not os.path.isfile(path):
+              out += ["No `rk_release_config.json` was produced: the build did not reach "
+                      "the configure-time gate. See the failing step above.", ""]
+          else:
+              with open(path, encoding="utf-8") as fh:
+                  r = json.load(fh)
+
+              # The invariant deliberately accepts SIZE or PERF, so "verdict: pass"
+              # does not say WHICH mode shipped. Resolve it from the recorded rows
+              # rather than from the defaults file, which is an input, not evidence.
+              mode = "unresolved"
+              for row in r.get("invariants") or []:
+                  if row.get("name") == "COMPILER_OPTIMIZATION":
+                      actual = row.get("actual")
+                      if isinstance(actual, dict):
+                          on = [k for k, v in sorted(actual.items()) if v is True]
+                          mode = ", ".join(on) if on else "none selected"
+                      else:
+                          mode = str(actual)
+              rows = [
+                  ("optimization mode", mode),
+                  ("verdict", r.get("verdict")),
+                  ("enforced", json.dumps(r.get("enforced"))),
+                  ("config digest", r.get("config_digest")),
+                  ("tokens", " ".join(r.get("tokens") or [])),
+                  ("run", "%s run %s attempt %s" % (os.environ.get("GITHUB_REPOSITORY"),
+                                                    os.environ.get("GITHUB_RUN_ID"),
+                                                    os.environ.get("GITHUB_RUN_ATTEMPT"))),
+                  ("commit", os.environ.get("GITHUB_SHA")),
+              ]
+              out += ["| field | value |", "|---|---|"]
+              out += ["| %s | `%s` |" % (k, v) for k, v in rows]
+              out.append("")
+
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
               fh.write("\n".join(out) + "\n")
           print("\n".join(out))
@@ -154,11 +191,33 @@ jobs:
             0x10000 idf_app/build/roon_knob.bin
           ls -la *.bin
 
+      # if-no-files-found: error is NOT a per-file guarantee. actions/upload-artifact
+      # evaluates it once against the combined search result, so with three patterns
+      # it fires only when ALL of them match nothing: the report could be absent and
+      # the upload would still be green because the two binaries matched. The
+      # per-file guarantee has to be made here, explicitly, before the upload.
+      - name: Assert every artifact input exists (#202)
+        run: |
+          set -euo pipefail
+          missing=0
+          for f in \
+            idf_app/build/roon_knob.bin \
+            roon_knob_merged.bin \
+            idf_app/build/config/rk_release_config.json
+          do
+            if [ -f "$f" ]; then
+              echo "ok      $f ($(wc -c < "$f") bytes)"
+            else
+              echo "MISSING $f"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] || { echo "refusing to upload an incomplete artifact"; exit 1; }
+
       # rk_release_config.json rides along with the firmware so the config that was
       # gated is recoverable from the artifact months later, alongside the binary it
-      # describes (#202). if-no-files-found: error closes the same requested-artifact
-      # fail-open class as RK-RELCFG-NOREPORT: the default is `warn`, which would let
-      # a missing report -- or a missing binary -- pass as a green upload.
+      # describes (#202). if-no-files-found: error is kept as defence in depth for
+      # the zero-match case only; the step above is what guarantees each file.
       - name: Upload ESP32-S3 artifact
         uses: actions/upload-artifact@v4
         with:
@@ -191,24 +250,55 @@ jobs:
   build-stale-config:
     name: build-stale-config
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
+      # A FAITHFUL stale tree: a full copy of the committed defaults with ONLY the
+      # optimization selection regressed to what a pre-#202 developer tree carried.
+      #
+      # This matters more than it looks. An earlier version of this job seeded a
+      # three-line sdkconfig, which -- because a stale sdkconfig overrides defaults
+      # -- also dropped PSRAM, the custom partition table and the flash size, so the
+      # build could not link for reasons that had nothing to do with the gate. The
+      # job went red either way and proved only that the checker noticed. Keeping
+      # every other setting identical makes the gate the sole possible cause of
+      # failure, which is the only way the ON/OFF pair below means anything.
+      #
       # Seeded BEFORE any configure. `idf.py set-target` must never be used here:
       # it renames an existing sdkconfig to sdkconfig.old, which would silently
       # destroy the very condition under test. The action only exports IDF_TARGET.
-      - name: Seed a stale, debug-optimized sdkconfig
+      - name: Seed a faithful stale tree, differing only in the optimization choice
         run: |
-          printf '%s\n' \
-            'CONFIG_COMPILER_OPTIMIZATION_DEBUG=y' \
-            '# CONFIG_COMPILER_OPTIMIZATION_SIZE is not set' \
-            '# CONFIG_COMPILER_OPTIMIZATION_PERF is not set' \
-            > idf_app/sdkconfig
-          cat idf_app/sdkconfig
+          set -euo pipefail
+          python3 - <<'PY'
+          src, dst = "idf_app/sdkconfig.defaults", "idf_app/sdkconfig"
+          out, swapped = [], 0
+          with open(src, encoding="utf-8") as fh:
+              for line in fh:
+                  if line.strip() == "CONFIG_COMPILER_OPTIMIZATION_SIZE=y":
+                      out += ["CONFIG_COMPILER_OPTIMIZATION_DEBUG=y\n",
+                              "# CONFIG_COMPILER_OPTIMIZATION_SIZE is not set\n",
+                              "# CONFIG_COMPILER_OPTIMIZATION_PERF is not set\n",
+                              "# CONFIG_COMPILER_OPTIMIZATION_NONE is not set\n"]
+                      swapped += 1
+                  else:
+                      out.append(line)
+          assert swapped == 1, "expected exactly one optimization line, found %d" % swapped
+          with open(dst, "w", encoding="utf-8") as fh:
+              fh.writelines(out)
+          print("seeded %s from %s" % (dst, src))
+          PY
+          echo "--- optimization selection in the seeded tree ---"
+          grep -n 'COMPILER_OPTIMIZATION' idf_app/sdkconfig
+          echo "--- everything else must be byte-identical to the defaults ---"
+          diff <(grep -v 'COMPILER_OPTIMIZATION' idf_app/sdkconfig.defaults) \
+               <(grep -v 'COMPILER_OPTIMIZATION' idf_app/sdkconfig)
+          echo "seed differs from committed defaults only in the optimization choice"
 
-      - name: Build with the gate enforced (expected to FAIL)
-        id: stale
+      # Run 1: enforcement ON. Must fail, and must fail AT THE GATE.
+      - name: Run 1 of 2 - enforcement ON (expected to FAIL)
+        id: enforced
         continue-on-error: true
         uses: espressif/esp-idf-ci-action@v1
         with:
@@ -217,24 +307,89 @@ jobs:
           path: idf_app
           command: >-
             set -o pipefail;
-            idf.py -DRK_ENFORCE_RELEASE_CONFIG=ON build 2>&1 | tee rk-stale.log;
+            idf.py -DRK_ENFORCE_RELEASE_CONFIG=ON build 2>&1 | tee rk-stale-on.log;
             exit ${PIPESTATUS[0]}
 
-      - name: Require the checker's exact verdict, not arbitrary build failure
+      # Run 2 reconfigures the same tree and rewrites the report, so run 1's
+      # evidence is copied out first. Host-side reads of container-written files
+      # are fine; only writes into build/ are not.
+      - name: Preserve run 1 evidence
         run: |
           set -euo pipefail
-          if [ "${{ steps.stale.outcome }}" != "failure" ]; then
-            echo "FAIL: seeded stale config did not fail the build (outcome=${{ steps.stale.outcome }})"
+          mkdir -p "$RUNNER_TEMP/stale"
+          cp idf_app/build/config/rk_release_config.json "$RUNNER_TEMP/stale/report-on.json"
+          cp idf_app/build/config/sdkconfig.json "$RUNNER_TEMP/stale/sdkconfig-on.json"
+          ls -l "$RUNNER_TEMP/stale"
+
+      - name: Assert run 1 failed at the gate, for the stated reason
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.enforced.outcome }}" != "failure" ]; then
+            echo "FAIL: enforcement ON did not fail the seeded stale build (outcome=${{ steps.enforced.outcome }})"
             exit 1
           fi
-          echo "--- required token ---"
-          grep -F 'RK-RELCFG-VIOLATION: COMPILER_OPTIMIZATION_DEBUG' idf_app/rk-stale.log
+          echo "--- required violation token ---"
+          grep -F 'RK-RELCFG-VIOLATION: COMPILER_OPTIMIZATION_DEBUG' idf_app/rk-stale-on.log
+          echo "--- required enforcement banner ---"
+          grep -F 'RK-RELCFG-ENFORCED' idf_app/rk-stale-on.log
           echo "--- required report verdict ---"
           python3 idf_app/tools/assert_release_report.py \
-            --report idf_app/build/config/rk_release_config.json \
-            --config idf_app/build/config/sdkconfig.json \
+            --report "$RUNNER_TEMP/stale/report-on.json" \
+            --config "$RUNNER_TEMP/stale/sdkconfig-on.json" \
             --expect-enforced true \
             --expect-verdict fail
+
+      # Run 2: the POSITIVE CONTROL. Identical tree, identical violating config,
+      # enforcement OFF -- and it must build all the way through. No
+      # continue-on-error: if this run fails, something other than the gate was
+      # stopping the build, and the negative proof above would have been worthless.
+      - name: Run 2 of 2 - identical tree, enforcement OFF (expected to SUCCEED)
+        id: unenforced
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: release-v5.4
+          target: esp32s3
+          path: idf_app
+          command: >-
+            set -o pipefail;
+            idf.py -DRK_ENFORCE_RELEASE_CONFIG=OFF build 2>&1 | tee rk-stale-off.log;
+            exit ${PIPESTATUS[0]}
+
+      # The pair is the proof: same tree, same resolved config, same fail verdict,
+      # opposite outcomes. That makes fail_at_build_time() the sole difference
+      # between a shipped artifact and a blocked one -- demonstrated, not assumed.
+      - name: Assert run 2 succeeded, unenforced, on the same violating config
+        run: |
+          set -euo pipefail
+          cp idf_app/build/config/rk_release_config.json "$RUNNER_TEMP/stale/report-off.json"
+          echo "--- required NOT ENFORCED banner ---"
+          grep -F '*** RELEASE CONFIG INVARIANTS NOT ENFORCED' idf_app/rk-stale-off.log
+          echo "--- the unenforced build really produced firmware ---"
+          test -f idf_app/build/roon_knob.bin
+          ls -l idf_app/build/roon_knob.bin
+          echo "--- report still records the violation, unenforced ---"
+          python3 idf_app/tools/assert_release_report.py \
+            --report "$RUNNER_TEMP/stale/report-off.json" \
+            --config idf_app/build/config/sdkconfig.json \
+            --expect-enforced false \
+            --expect-verdict fail
+          echo "--- enforcement is the ONLY difference between the two runs ---"
+          python3 - <<'PY'
+          import json, os
+          base = os.path.join(os.environ["RUNNER_TEMP"], "stale")
+          on = json.load(open(os.path.join(base, "report-on.json"), encoding="utf-8"))
+          off = json.load(open(os.path.join(base, "report-off.json"), encoding="utf-8"))
+          assert on["config_digest"] == off["config_digest"], \
+              "the two runs resolved DIFFERENT configs (%s vs %s): not a controlled pair" \
+              % (on["config_digest"], off["config_digest"])
+          assert on["verdict"] == "fail" and off["verdict"] == "fail", (on["verdict"], off["verdict"])
+          assert on["enforced"] is True and off["enforced"] is False, (on["enforced"], off["enforced"])
+          print("same resolved config : %s" % on["config_digest"])
+          print("same verdict         : fail")
+          print("enforced ON  -> build FAILED  (fail_at_build_time fired)")
+          print("enforced OFF -> build SUCCEEDED with firmware produced")
+          print("fail_at_build_time is load-bearing.")
+          PY
 
   release:
     name: Create GitHub Release
@@ -257,6 +412,46 @@ jobs:
         with:
           name: esp32s3-firmware
           path: esp32s3-artifacts
+
+      # Gate the publish on the artifact's own evidence (#202), not on the memory
+      # of a green job. build-idf is already a `needs:` prerequisite, but this
+      # asserts the thing being published: that the config the release was built
+      # from passed the gate with enforcement on. The digest is recorded in the run
+      # summary so "which config did v1.x.y ship?" is answerable from the release
+      # run itself. This job checks out the repo above, so the asserter is present;
+      # python3 is preinstalled on ubuntu-latest.
+      - name: Assert the downloaded artifact carries a passing gate report (#202)
+        run: |
+          set -euo pipefail
+          report=esp32s3-artifacts/idf_app/build/config/rk_release_config.json
+          test -f "$report" || { echo "artifact has no $report - refusing to publish"; exit 1; }
+          python3 idf_app/tools/assert_release_report.py \
+            --report "$report" \
+            --expect-enforced true \
+            --expect-verdict pass
+          python3 - <<'PY'
+          import json, os
+          with open("esp32s3-artifacts/idf_app/build/config/rk_release_config.json",
+                    encoding="utf-8") as fh:
+              r = json.load(fh)
+          mode = "unresolved"
+          for row in r.get("invariants") or []:
+              if row.get("name") == "COMPILER_OPTIMIZATION" and isinstance(row.get("actual"), dict):
+                  on = [k for k, v in sorted(row["actual"].items()) if v is True]
+                  mode = ", ".join(on) if on else "none selected"
+          rows = [("release tag", os.environ.get("GITHUB_REF_NAME")),
+                  ("optimization mode", mode),
+                  ("verdict", r.get("verdict")),
+                  ("enforced", json.dumps(r.get("enforced"))),
+                  ("config digest", r.get("config_digest"))]
+          out = ["### Published firmware release config (#202)", "",
+                 "| field | value |", "|---|---|"]
+          out += ["| %s | `%s` |" % (k, v) for k, v in rows]
+          out.append("")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
+              fh.write("\n".join(out) + "\n")
+          print("\n".join(out))
+          PY
 
       - name: Get version from tag
         id: version

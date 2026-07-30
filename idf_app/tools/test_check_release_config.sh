@@ -99,6 +99,26 @@ expect "json is not an object"         3 "RK-RELCFG-NOCONFIG"  -- "$PY" "$CHECKE
 expect "config file absent"            3 "RK-RELCFG-NOCONFIG"  -- "$PY" "$CHECKER" --config "$FIX/does_not_exist.json"
 expect "usage error is not a verdict"  64 "RK-RELCFG-USAGE"    -- "$PY" "$CHECKER"
 
+echo "=== checker: absent flag means not-requested, EMPTY value is a wiring bug ==="
+# `--report ""` used to be falsy: no report requested, none written, exit 0 with
+# RK-RELCFG-OK. Reachable in CI just by deleting the step that defines the path,
+# since `bash -e` without `-u` leaves the variable empty.
+expect "empty --report is a usage error"  64 "RK-RELCFG-USAGE: --report was supplied with an empty value" \
+    -- "$PY" "$CHECKER" --config "$FIX/pass.json" --report "" --enforced yes
+expect "empty --log is a usage error"     64 "RK-RELCFG-USAGE: --log was supplied with an empty value" \
+    -- "$PY" "$CHECKER" --config "$FIX/pass.json" --log ""
+expect "empty --config is a usage error"  64 "RK-RELCFG-USAGE: --config was supplied with an empty value" \
+    -- "$PY" "$CHECKER" --config ""
+expect "empty --log-must-contain is usage" 64 "RK-RELCFG-USAGE: --log-must-contain was supplied with an empty value" \
+    -- "$PY" "$CHECKER" --config "$FIX/pass.json" --log "$FIX/kconfgen_rename.log" --log-must-contain ""
+expect "empty --defaults is a usage error" 64 "RK-RELCFG-USAGE: --defaults was supplied with an empty value" \
+    -- "$PY" "$CHECKER" --config "$FIX/pass.json" --defaults ""
+expect "marker without a log is usage"    64 "RK-RELCFG-USAGE: --log-must-contain requires at least one non-empty --log" \
+    -- "$PY" "$CHECKER" --config "$FIX/pass.json" --log-must-contain "RK-RELCFG-VERDICT:"
+# ...while omitting the flags entirely stays a legitimate, passing invocation.
+expect "omitted flags are not a failure"  0 "RK-RELCFG-OK" \
+    -- "$PY" "$CHECKER" --config "$FIX/pass.json" --enforced yes
+
 echo "=== checker: undefined defaults are kconfgen's verdict ==="
 expect "kconfgen unknown symbol -> 4"  4 "RK-RELCFG-UNDEFINED: CONFIG_WIFI_SSID" \
     -- "$PY" "$CHECKER" --config "$FIX/pass.json" --log "$FIX/kconfgen_undefined.log"
@@ -280,6 +300,20 @@ expect "expected marker with no scanned log REJECTED" 1 "scanned no log" \
 expect "real gate report satisfies the caller marker" 0 "RK-RELCFG-ASSERT-OK" \
     -- "$PY" "$ASSERTER" --report "$TMP/withlog.json" --config "$FIX/pass.json" \
        --require-logs-read --expect-log-marker "Configuring done"
+
+echo "=== asserter: empty values, and 'any' for fields the caller cannot witness ==="
+expect "empty --report is a usage error"  64 "RK-RELCFG-ASSERT-USAGE" \
+    -- "$PY" "$ASSERTER" --report ""
+expect "empty --expect-log-marker is usage" 64 "RK-RELCFG-ASSERT-USAGE" \
+    -- "$PY" "$ASSERTER" --report "$TMP/withlog.json" --expect-log-marker ""
+# 'any' declines to re-assert an input the caller itself supplied (non-circular),
+# while the evidence-bearing assertions still apply.
+expect "any/any accepts either enforcement state" 0 "RK-RELCFG-ASSERT-OK" \
+    -- "$PY" "$ASSERTER" --report "$FIX/report_enforced_false.json" \
+       --expect-enforced any --expect-verdict any
+expect "any/any still enforces the marker"  1 "does not show expected log marker" \
+    -- "$PY" "$ASSERTER" --report "$FIX/report_logs_no_required_markers.json" \
+       --expect-enforced any --expect-verdict any --expect-log-marker "RK-RELCFG-VERDICT:"
 
 # The stale-config integration negative asserts its report this way.
 "$PY" "$CHECKER" --config "$FIX/opt_debug.json" --enforced yes --report "$TMP/stale.json" >/dev/null 2>&1

@@ -73,8 +73,15 @@ def main(argv: list[str]) -> int:
     )
     parser.add_argument("--report", required=True, help="path to rk_release_config.json")
     parser.add_argument("--config", help="path to the sdkconfig.json the report should describe")
-    parser.add_argument("--expect-verdict", choices=["pass", "fail"], default="pass")
-    parser.add_argument("--expect-enforced", choices=["true", "false"], default="true")
+    # "any" exists so a caller can decline to assert a field it has no independent
+    # knowledge of. Asserting that a report says `enforced: true` when the same
+    # caller just told the same checker `--enforced yes` is circular: it re-reads
+    # its own input and proves nothing. In that situation the real enforcement is
+    # the checker's exit code, and the assertions worth making here are the ones
+    # about evidence the caller did NOT supply (--require-logs-read,
+    # --expect-log-marker).
+    parser.add_argument("--expect-verdict", choices=["pass", "fail", "any"], default="pass")
+    parser.add_argument("--expect-enforced", choices=["true", "false", "any"], default="true")
     parser.add_argument("--require-logs-read", action="store_true",
                         help="additionally require the report to prove a log was actually "
                              "read: at least one entry in logs_scanned, every entry "
@@ -94,6 +101,16 @@ def main(argv: list[str]) -> int:
 
     parser.error = _usage_error  # type: ignore[assignment]
     args = parser.parse_args(argv)
+
+    # Same absent-vs-empty contract as the checker: an empty value is a wiring
+    # bug, and an empty expected marker would match everything and prove nothing.
+    for flag, values in (("--report", [args.report]),
+                         ("--config", [args.config] if args.config is not None else []),
+                         ("--expect-log-marker", args.expect_log_marker)):
+        for value in values:
+            if value is not None and not str(value).strip():
+                _usage_error("%s was supplied with an empty value; omit the flag entirely "
+                             "if it is not requested" % flag)
 
     failures: list[str] = []
     report: dict | None = None
@@ -119,12 +136,13 @@ def main(argv: list[str]) -> int:
         if report.get("schema") != SCHEMA:
             failures.append("schema is %r, expected %r" % (report.get("schema"), SCHEMA))
 
-        expect_enforced = args.expect_enforced == "true"
-        if report.get("enforced") is not expect_enforced:
-            failures.append("enforced is %r, expected %r"
-                            % (report.get("enforced"), expect_enforced))
+        if args.expect_enforced != "any":
+            expect_enforced = args.expect_enforced == "true"
+            if report.get("enforced") is not expect_enforced:
+                failures.append("enforced is %r, expected %r"
+                                % (report.get("enforced"), expect_enforced))
 
-        if report.get("verdict") != args.expect_verdict:
+        if args.expect_verdict != "any" and report.get("verdict") != args.expect_verdict:
             failures.append("verdict is %r, expected %r"
                             % (report.get("verdict"), args.expect_verdict))
 
