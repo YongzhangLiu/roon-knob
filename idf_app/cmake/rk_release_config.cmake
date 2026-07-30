@@ -27,11 +27,21 @@
 #     is narrower than "target-selected invocations": specifically `idf.py app`
 #     and `idf.py app-flash`, which build the app target directly. Local coverage
 #     is therefore broad but not absolute.
-#   * Real non-optionality lives in CI: the workflow forces enforcement ON and
-#     then asserts this report on the host (tools/assert_release_report.py).
-#     Deleting that host step is not detectable from inside the repo; closing
-#     that hole needs branch protection with required checks, which #202 does
-#     not touch.
+#   * CI's non-optionality is real but narrow. The workflow forces enforcement ON
+#     and then asserts this report on the host (tools/assert_release_report.py),
+#     so a build-idf job cannot run unenforced; and publication is gated via
+#     needs:. Be exact about WHICH publication, because the two consumers gate on
+#     DIFFERENT sets: `release` needs ALL THREE proof jobs -- needs: [build-idf,
+#     release-config-fixtures, build-stale-config] -- whereas deploy-pr-preview
+#     needs ONLY TWO -- needs: [build-idf, release-config-fixtures] -- and does
+#     NOT need build-stale-config. So a red build-stale-config ALONE stops a
+#     release but does NOT stop a flashable PR preview, which can still publish
+#     from a tree whose stale-config integration proof is failing. Two further
+#     things none of this covers: deleting the host step is not detectable from
+#     inside the repo, and CI does not gate MERGING -- branch protection on
+#     master currently defines NO required status checks, so nothing here stops
+#     a merge with these jobs red. Closing either needs required checks, which
+#     are absent today and which #202 does not touch.
 #   * RK_ENFORCE_RELEASE_CONFIG is a CMake CACHE variable: once set to OFF in a
 #     build tree it persists for every later build in that tree. The banner is
 #     re-emitted on every configure so the state stays visible rather than
@@ -111,20 +121,51 @@ message(STATUS
         "result=${rk_relcfg_result} report=${RK_RELCFG_REPORT}")
 message(STATUS "${rk_relcfg_text}")
 
-# Prepare fail_at_build_time() arguments. Two hardening requirements, both real:
+# Prepare fail_at_build_time() arguments. Three hardening requirements, all real:
 #   * message_line0 is a REQUIRED positional, so an empty capture would become a
 #     configure-time CMake argument error -- the hard failure that wedges
 #     menuconfig, i.e. exactly the mode this design avoids. Guarantee non-empty.
 #   * the helper does foreach(line ${ARGN}), which splits on ';'. The checker
 #     already strips ';' from its output; this is the second line of defence.
+#   * message_line0 must be ATTRIBUTABLE to this gate. The capture is stdout AND
+#     stderr of an interpreter this gate does not control, and real ones are noisy:
+#     an asdf-managed python3 with one broken .pth file writes a site-import
+#     traceback to stderr before the checker's main() ever runs. Taking the first
+#     captured line verbatim then heads the build failure with "Error processing
+#     line 1 of .../matplotlib-nspkg.pth" -- an unattributable message from the one
+#     component whose whole job is to say why the build stopped.
 string(REPLACE ";" "," rk_relcfg_safe "${rk_relcfg_text}")
 string(REGEX REPLACE "\r?\n" ";" rk_relcfg_lines "${rk_relcfg_safe}")
 list(FILTER rk_relcfg_lines EXCLUDE REGEX "^[ \t]*$")
-list(LENGTH rk_relcfg_lines rk_relcfg_line_count)
-if(rk_relcfg_line_count EQUAL 0)
-    set(rk_relcfg_lines
-        "RK-RELCFG-INTERNAL: checker produced no output (result=${rk_relcfg_result})")
+
+# Line 0 is the checker's FIRST RK-RELCFG-* token when it emitted one, otherwise a
+# synthesized RK-RELCFG-INTERNAL line. Ambient noise is never discarded -- only
+# demoted below that header -- so nothing diagnostic is lost, and a token found
+# further down the capture (interpreter noise on stdout, verdict on stderr) still
+# gets to name the failure. Anchored, so a noise line that merely MENTIONS a token
+# further along cannot claim line 0.
+set(rk_relcfg_line0 "")
+set(rk_relcfg_line0_index 0)
+foreach(rk_relcfg_line IN LISTS rk_relcfg_lines)
+    if(rk_relcfg_line MATCHES "^[ \t]*RK-RELCFG-")
+        set(rk_relcfg_line0 "${rk_relcfg_line}")
+        break()
+    endif()
+    math(EXPR rk_relcfg_line0_index "${rk_relcfg_line0_index} + 1")
+endforeach()
+
+if(rk_relcfg_line0 STREQUAL "")
+    # No token anywhere: an empty capture, or ambient interpreter output only. The
+    # synthesized line carries the exit status -- safe, and already printed in the
+    # banner above -- and nothing from the capture itself, which is precisely the
+    # content that could not be attributed. RESULT_VARIABLE can be an error STRING
+    # rather than a number, so it gets the same ';' treatment as the capture.
+    string(REPLACE ";" "," rk_relcfg_safe_result "${rk_relcfg_result}")
+    set(rk_relcfg_line0 "RK-RELCFG-INTERNAL: checker emitted no RK-RELCFG-* token (result=${rk_relcfg_safe_result})")
+else()
+    list(REMOVE_AT rk_relcfg_lines ${rk_relcfg_line0_index})
 endif()
+set(rk_relcfg_lines "${rk_relcfg_line0}" ${rk_relcfg_lines})
 
 # STREQUAL, not EQUAL: execute_process() sets RESULT_VARIABLE to an error STRING
 # when the command cannot be launched at all, and EQUAL on a non-numeric value is

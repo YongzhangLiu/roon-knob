@@ -4,9 +4,9 @@
 # tools/test_check_release_config.sh proves the CHECKER's logic. This proves the
 # GATE's logic: idf_app/cmake/rk_release_config.cmake is the file that decides
 # whether a violating build fails, and its defensive paths (deleted checker, empty
-# checker output, ';' in a message, an unwritable report, an interpreter that
-# cannot be launched at all) are reachable in exactly the situations where nobody
-# is watching. They were previously covered by construction and by an uncommitted
+# checker output, tokenless or noise-prefixed checker output, ';' in a message, an
+# unwritable report, an interpreter that cannot be launched at all) are reachable
+# in exactly the situations where nobody is watching. They were previously covered by construction and by an uncommitted
 # scratch harness -- which is the same as not covered.
 #
 # Dependency-light and portable: bash, cmake, python3. No ESP-IDF, no container,
@@ -150,7 +150,45 @@ check "deleted checker -> NOCHECKER" "$d" yes "RK-RELCFG-NOCHECKER" "RK-RELCFG-N
 
 d="$(tree emptyout)"; printf 'import sys\nsys.exit(1)\n' > "$d/tools/check_release_config.py"
 gate "$d" ON
-check "empty checker output -> synthesized line" "$d" yes "" "RK-RELCFG-INTERNAL: checker produced no output"
+check "empty checker output -> synthesized line" "$d" yes "" "RK-RELCFG-INTERNAL: checker emitted no RK-RELCFG-* token"
+
+# The two cases above/below are about ATTRIBUTION, and they are separated from the
+# empty case deliberately: the gate captures stdout AND stderr of an interpreter it
+# does not control, so on a real developer machine the capture is often non-empty
+# and still tokenless (an asdf python3 with one broken .pth writes a site-import
+# traceback before main() runs). These fixtures pin both halves without depending
+# on whether the LOCAL interpreter happens to be noisy -- which is why the empty
+# case alone is not sufficient coverage: on a quiet CI interpreter it degenerates
+# to the trivially-empty path and proves nothing about noise.
+d="$(tree noise_token)"
+printf 'print("Error processing line 1 of /x/broken.pth:")\nprint("RK-RELCFG-VIOLATION: COMPILER_OPTIMIZATION_DEBUG")\nimport sys\nsys.exit(2)\n' \
+    > "$d/tools/check_release_config.py"
+gate "$d" ON
+check "noise before token -> token heads the failure" "$d" yes "" \
+      "RK-RELCFG-VIOLATION: COMPILER_OPTIMIZATION_DEBUG"
+# ...and the demoted line is still passed through rather than dropped. Asserted as
+# ">= 2 arguments", not "== 2": this same local interpreter may add ambient stderr
+# lines of its own, so an exact count would pass or fail on whose machine it ran.
+# Either way, promoting a token must not cost the gate a diagnostic line.
+arg_count="$(sed -n 's/^ARG_COUNT=//p' "$d/marker.txt")"
+if [ "${arg_count:-0}" -ge 2 ]; then
+    pass_count=$((pass_count + 1)); printf 'ok   %-44s args=%s\n' "demoted noise preserved below line0" "$arg_count"
+else
+    fail_count=$((fail_count + 1)); echo "FAIL noise line was dropped instead of demoted (ARG_COUNT=${arg_count:-unset})"
+    sed 's/^/    /' "$d/marker.txt"
+fi
+
+d="$(tree noise_only)"
+printf 'import sys\nsys.stderr.write("Error processing line 1 of /x/broken.pth:\\n")\nsys.exit(1)\n' \
+    > "$d/tools/check_release_config.py"
+gate "$d" ON
+check "tokenless noise -> synthesized, noise not line0" "$d" yes "" \
+      "RK-RELCFG-INTERNAL: checker emitted no RK-RELCFG-* token (result=1)"
+if grep -q '^LINE0=Error processing' "$d/marker.txt"; then
+    fail_count=$((fail_count + 1)); echo "FAIL interpreter noise became message_line0"
+else
+    pass_count=$((pass_count + 1)); printf 'ok   %-44s\n' "interpreter noise never becomes line0"
+fi
 
 d="$(tree semis)"
 printf 'print("RK-RELCFG-VIOLATION: A;B;C")\nprint("")\nprint("second; line")\nimport sys\nsys.exit(2)\n' \

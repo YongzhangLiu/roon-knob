@@ -1,12 +1,25 @@
 #!/usr/bin/env python3
 """Host-side assertion over the release-config report. Issue #202.
 
-This is the layer that makes "CI cannot opt out" true rather than assumed.
-Forcing ``-DRK_ENFORCE_RELEASE_CONFIG=ON`` in the container is necessary but not
+This is the layer that makes one narrow claim true rather than assumed: **a
+``build-idf`` job cannot run UNENFORCED**. Forcing
+``-DRK_ENFORCE_RELEASE_CONFIG=ON`` in the container is necessary but not
 sufficient: the flag could be flipped, the checker deleted, or the CMake call
 removed, and the build would still go green. So CI additionally requires, *on the
 host*, that the build produced a report which says the gate really ran, really
 enforced, and really passed -- over the same config file the build resolved.
+
+The claim stops exactly there. It is deliberately NOT "CI cannot opt out":
+
+* **Publication is gated**, by a real in-repo dependency: ``release`` declares
+  ``needs: [build-idf, release-config-fixtures, build-stale-config]`` and
+  ``deploy-pr-preview`` declares ``needs: [build-idf, release-config-fixtures]``.
+  Note the asymmetry those two lists create -- ``deploy-pr-preview`` does not need
+  ``build-stale-config``, so a red ``build-stale-config`` *alone* stops a release
+  but does **not** stop a flashable preview.
+* **Merging is not gated.** Branch protection on ``master`` currently defines no
+  required status checks, so a maintainer can merge with every #202 job red.
+  Nothing in this file, or anywhere in this tree, changes that.
 
 Assertions:
 
@@ -21,7 +34,9 @@ Exit 0 when every assertion holds, 1 when any fails, 64 on bad usage.
 The residual ceiling is stated honestly in the ADR: this script catches a flipped
 flag, a deleted checker and a removed CMake call, but deleting *this step* from
 the workflow is not detectable in-repo. Closing that requires branch protection
-with required checks, which #202 does not touch.
+with required status checks -- which are **currently absent** on ``master``, and
+which #202 does not touch: adding them is a repository-settings change needing
+maintainer authorization, named in the ADR as a follow-up.
 
 Standard library only, so it runs on a bare CI host with no ESP-IDF present.
 """

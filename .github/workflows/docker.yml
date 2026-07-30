@@ -62,11 +62,30 @@ jobs:
             idf.py -DRK_ENFORCE_RELEASE_CONFIG=ON build 2>&1 | tee rk-build.log;
             exit ${PIPESTATUS[0]}
 
-      # This host assertion is what makes "CI cannot opt out" true rather than
-      # assumed: flipping the flag, deleting the checker, or removing the CMake
-      # call all leave the report missing, unenforced, or describing another
-      # config, and all three fail here. tools/test_check_release_config.sh proves
-      # this assertion itself has teeth (assert-the-assertion cases).
+      # This host assertion is what makes "this job cannot run UNENFORCED" true
+      # rather than assumed: flipping the flag, deleting the checker, or removing
+      # the CMake call all leave the report missing, unenforced, or describing
+      # another config, and all three fail here.
+      # tools/test_check_release_config.sh proves this assertion itself has teeth
+      # (assert-the-assertion cases).
+      # Scope that claim precisely -- an earlier version of this comment said "CI
+      # cannot opt out", which is too broad. What holds: a job cannot run
+      # unenforced, and publication is gated by real `needs:` edges. Be exact
+      # about WHICH publication, because the two consumers gate on different
+      # sets and an earlier version of this comment blurred them:
+      #   * `release` needs ALL THREE proof jobs -- `needs: [build-idf,
+      #     release-config-fixtures, build-stale-config]` -- so any one of them
+      #     red or skipped stops a firmware asset from being published.
+      #   * `deploy-pr-preview` needs ONLY TWO -- `needs: [build-idf,
+      #     release-config-fixtures]`. It does NOT need `build-stale-config`, so
+      #     a red `build-stale-config` ALONE does not stop a preview: a flashable
+      #     preview can publish from a tree whose stale-config integration proof
+      #     is failing, provided the build and the fixtures are green.
+      # What does NOT hold at all: that CI blocks MERGING. Branch protection on
+      # master currently has no required status checks, 0 required approvals and
+      # enforce_admins off, so a maintainer can merge with these jobs red. Making
+      # them required checks is a repo-settings change needing maintainer
+      # authorization; see the ADR's "Enforcement ceilings" section.
       # The ESP-IDF container runs as root with no --user, so everything it created
       # under idf_app/build/ is root-owned on the host bind mount. Host `run:` steps
       # execute as `runner` and may therefore only READ in there. Anything a host
@@ -181,6 +200,25 @@ jobs:
               out += ["| field | value |", "|---|---|"]
               out += ["| %s | `%s` |" % (k, v) for k, v in rows]
               out.append("")
+
+          # Static caveat, emitted on the passing, failing and missing-report
+          # paths alike. A table of green config fields invites being read as
+          # "the published image is correct"; it is not that. Deliberately
+          # literal rather than derived from the report, so that it still
+          # appears when there is NO report to derive anything from -- which is
+          # exactly the run where a reader is most likely to misread the
+          # summary. Duplicated verbatim in the `release` job's summary because
+          # the two jobs cannot share code; keep them in step.
+          # See the ADR's ESPTOOLPY_FLASHSIZE section.
+          out += [
+              "> **This is a configuration verdict, not image geometry.** The gate checks "
+              "IDF's resolved Kconfig configuration against release policy. It does not "
+              'validate flash image layout: `sdkconfig.defaults` declares '
+              '`CONFIG_ESPTOOLPY_FLASHSIZE="16MB"` while the merged image published by '
+              "this workflow is built with `esptool merge-bin --flash-size 8MB`. That "
+              "disagreement is real, known, and unresolved pending #203.",
+              "",
+          ]
 
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
               fh.write("\n".join(out) + "\n")
@@ -555,6 +593,20 @@ jobs:
                  "| field | value |", "|---|---|"]
           out += ["| %s | `%s` |" % (k, v) for k, v in rows]
           out.append("")
+          # Same static caveat as build-idf's summary, and it matters most here:
+          # this is the table someone reads when asking "what did v1.x.y ship?",
+          # so a green config verdict must not be mistaken for a validated flash
+          # image while the 16MB/8MB disagreement is open. Kept in step with the
+          # copy in build-idf.
+          out += [
+              "> **This is a configuration verdict, not image geometry.** The gate checks "
+              "IDF's resolved Kconfig configuration against release policy. It does not "
+              'validate flash image layout: `sdkconfig.defaults` declares '
+              '`CONFIG_ESPTOOLPY_FLASHSIZE="16MB"` while the merged image published by '
+              "this workflow is built with `esptool merge-bin --flash-size 8MB`. That "
+              "disagreement is real, known, and unresolved pending #203.",
+              "",
+          ]
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
               fh.write("\n".join(out) + "\n")
           print("\n".join(out))

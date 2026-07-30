@@ -61,6 +61,8 @@ CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
 
 The ESP32-S3-Knob has 16MB flash. This enables the full partition layout including OTA slots.
 
+**Known open disagreement:** the merged flash image CI builds for web flashing passes `esptool merge-bin --flash-size 8MB`, which does not match the 16MB declared here. The release config gate asserts the config value only (see [Release Config Gate](#release-config-gate-202)) and takes no position on the correct direction; reconciling the two is [#203](https://github.com/muness/roon-knob/issues/203).
+
 ### PSRAM Configuration
 
 ```
@@ -222,6 +224,10 @@ Every verdict is a stable `RK-RELCFG-*` token, so a failure always says *why*:
 
 The gate also writes `build/config/rk_release_config.json` on every configure, enforced or not, and CI uploads it with the firmware.
 
+### What a pass does *not* mean
+
+`RK-RELCFG-OK` is a verdict about the **resolved Kconfig configuration**, not about the flash image. In particular the gate checks that the configuration declares `CONFIG_ESPTOOLPY_FLASHSIZE="16MB"` — matching the committed defaults — but it does not read or validate any image header. The merged image CI publishes for web flashing is currently built with `esptool merge-bin --flash-size 8MB`, so that disagreement is real and open pending [#203](https://github.com/muness/roon-knob/issues/203). Both CI run summaries state this caveat inline, so a green gate table is not mistaken for a validated image. Image geometry, partition-fits-flash and size-headroom checks are #203's scope, not this gate's.
+
 ### Normal recovery — no escape hatch needed
 
 The gate defers failure to build time rather than aborting configure, precisely so that both recovery paths keep working:
@@ -237,6 +243,16 @@ idf.py build
 
 If the message is `RK-RELCFG-VIOLATION: COMPILER_OPTIMIZATION_DEBUG`, option 2 is almost certainly what you want: your `sdkconfig` predates the current defaults.
 
+### If it fails on a symbol nobody touched
+
+Several invariants pin values ESP-IDF supplies as its own defaults, over the mutable `release-v5.4` tag. If one of those flips upstream, the gate goes red naming a symbol no one in this repo changed. **That is drift detection working, not a broken gate**, and the response is a short procedure rather than an unblock:
+
+1. **Remeasure and review** — find what the value is now and why it changed, reading the symbol's declaration at the IDF commit CI actually resolved.
+2. **Decide whether the new upstream default is right for this device.** This is a product judgement and needs review.
+3. Then either **amend the invariant** to the reviewed value, or **declare the value explicitly** in `sdkconfig.defaults` — recording *why* in both cases.
+
+What you must **never** do: set `RK_ENFORCE_RELEASE_CONFIG=OFF` in CI, add `continue-on-error`, delete the gate or assertion step, or add a blanket allowlist. Each turns a one-time review into a permanent silent hole — a job that still looks green while enforcing nothing. The full rationale is in the decision record under *The permitted response to upstream drift*.
+
 ### Local-only escape hatch
 
 ```bash
@@ -248,7 +264,10 @@ This suppresses only the **failure**. The checker still runs, the report is stil
 Two things to know before using it:
 
 - **It is a CMake cache variable, so it persists** for every later build in that build directory, with no further mention on the command line. If you are unsure whether a local binary was gated, grep the build log for that banner, or `rm -rf build` to reset.
-- **CI cannot use it.** The workflow passes `-DRK_ENFORCE_RELEASE_CONFIG=ON` explicitly and then asserts the report on the host, so an artifact built with enforcement off cannot be published.
+- **CI cannot use it, and cannot silently build unenforced.** The workflow passes `-DRK_ENFORCE_RELEASE_CONFIG=ON` explicitly and then asserts the report on the host, so a `build-idf` job cannot run with enforcement off, and an artifact built with enforcement off cannot be **published**. Be precise about *which* publication each job gates, because the two `needs:` lists differ:
+  - `release` needs **all three** proof jobs — `needs: [build-idf, release-config-fixtures, build-stale-config]` — so any one of them red stops a `v*` tag from publishing firmware.
+  - `deploy-pr-preview` needs **only two** — `needs: [build-idf, release-config-fixtures]`. It does *not* need `build-stale-config`, so a red `build-stale-config` **alone does not block a preview**. A preview can be published from a tree whose stale-config integration proof is failing, provided the build and the fixtures are green.
+- **And CI does not block merging at all.** Branch protection on `master` currently defines no required status checks and no required approvals, so a red #202 job stops a release (and, for the two jobs it needs, a preview) but never stops a merge. Making these jobs required checks is a repository-settings change that needs maintainer authorization; see the decision record's *Enforcement ceilings* section.
 
 Prefer `rm sdkconfig` over the hatch. The hatch exists for the case where you deliberately want a debug-optimized local build (`CONFIG_COMPILER_OPTIMIZATION_DEBUG=y` for stepping through code), not as a way past an inconvenient message.
 
