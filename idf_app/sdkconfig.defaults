@@ -3,8 +3,12 @@
 #   DEBUG  bin 1761952 B  DIRAM 222931  IRAM 16383
 #   SIZE   bin 1613984 B  DIRAM 212259  IRAM 16383   <- smallest image, lowest DIRAM
 #   PERF   bin 1765520 B  DIRAM 219007  IRAM 16383
-# The gate in cmake/rk_release_config.cmake accepts either SIZE or PERF and rejects
-# DEBUG/NONE; this line carries the measured choice. Full table and decision rule:
+# The accepted set is owned by tools/check_release_config.py (CHOICE_INVARIANT's
+# "allowed"/"rejected"): either SIZE or PERF passes, DEBUG/NONE are rejected. Change
+# it there, not in cmake/rk_release_config.cmake, which only runs that checker and
+# names no optimization symbol. This line carries the measured choice; admitting a
+# mode outside the SIZE/PERF pair is a reviewed multi-place amendment, not a defaults
+# edit. Full table, decision rule and that edit surface:
 # docs/meta/decisions/2026-07-29_DECISION_EFFECTIVE_RELEASE_CONFIG.md
 CONFIG_COMPILER_OPTIMIZATION_SIZE=y
 
