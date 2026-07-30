@@ -209,6 +209,7 @@ jobs:
       - name: Prepare PR preview content
         env:
           PR_NUM: ${{ github.event.pull_request.number }}
+          BUILD_SHA: ${{ github.sha }}
         run: |
           mkdir -p pr-preview
 
@@ -224,7 +225,7 @@ jobs:
             "builds": [{
               "chipFamily": "ESP32-S3",
               "parts": [{
-                "path": "roon_knob_merged.bin",
+                "path": "roon_knob_merged.bin?sha=${BUILD_SHA}",
                 "offset": 0
               }]
             }]
