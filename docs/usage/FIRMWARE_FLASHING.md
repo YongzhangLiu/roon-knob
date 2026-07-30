@@ -152,7 +152,7 @@ esptool.py --chip esp32s3 merge_bin \
   -o merged.bin \
   --flash_mode dio \
   --flash_freq 80m \
-  --flash_size 8MB \
+  --flash_size 16MB \
   0x0 bootloader.bin \
   0x8000 partition-table.bin \
   0xd000 ota_data_initial.bin \

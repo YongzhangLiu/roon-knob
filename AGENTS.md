@@ -78,8 +78,9 @@ volume, zones, playlists, and programs.
   Shipping requires the exact CI artifact to pass flash, sustained boot, and
   relevant display/input/connectivity checks on physical hardware.
 - CI release builds must use an optimized, evidence-backed configuration. The
-  current recovery baseline is the complete working-v4 profile on ESP-IDF 5.5,
-  not a single optimization-flag change.
+  current recovery baseline carries v4's non-debug build settings onto master
+  (PERF optimization, ESP-IDF 5.5, and a 16 MB merged image); runtime or memory
+  profile changes need their own hardware evidence.
 - This is a side project: prefer incremental factoring with shippable slices over
   an unbounded rewrite.
 
