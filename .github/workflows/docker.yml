@@ -70,17 +70,14 @@ jobs:
       # (assert-the-assertion cases).
       # Scope that claim precisely -- an earlier version of this comment said "CI
       # cannot opt out", which is too broad. What holds: a job cannot run
-      # unenforced, and publication is gated by real `needs:` edges. Be exact
-      # about WHICH publication, because the two consumers gate on different
-      # sets and an earlier version of this comment blurred them:
-      #   * `release` needs ALL THREE proof jobs -- `needs: [build-idf,
-      #     release-config-fixtures, build-stale-config]` -- so any one of them
-      #     red or skipped stops a firmware asset from being published.
-      #   * `deploy-pr-preview` needs ONLY TWO -- `needs: [build-idf,
-      #     release-config-fixtures]`. It does NOT need `build-stale-config`, so
-      #     a red `build-stale-config` ALONE does not stop a preview: a flashable
-      #     preview can publish from a tree whose stale-config integration proof
-      #     is failing, provided the build and the fixtures are green.
+      # unenforced, and publication is gated by real `needs:` edges. Both
+      # publishing consumers now gate on the SAME set -- `release` and
+      # `deploy-pr-preview` each declare `needs: [build-idf,
+      # release-config-fixtures, build-stale-config]` -- so any one of the three
+      # proof jobs red or skipped stops both a published firmware asset and a
+      # flashable PR preview. Earlier versions of this comment described an
+      # asymmetry (the preview path needing only two of the three); that gap is
+      # closed, so do not re-derive it from this comment.
       # What does NOT hold at all: that CI blocks MERGING. Branch protection on
       # master currently has no required status checks, 0 required approvals and
       # enforce_admins off, so a maintainer can merge with these jobs red. Making
@@ -96,13 +93,26 @@ jobs:
       - name: Define host-owned report path (#202)
         run: echo "RK_LOG_SCAN_REPORT=$RUNNER_TEMP/rk_log_scan_report.json" >> "$GITHUB_ENV"
 
+      # --forbid-absent-satisfied is a caller-owned coverage floor, not a change to
+      # what the checker decides. The checker correctly reads an absent
+      # expected-false symbol as satisfied, which is indistinguishable from that
+      # symbol having LEFT the SDK schema -- in which case the invariant stops being
+      # checked and the report still says `pass`. This build's resolved config
+      # currently reports every negative invariant as an explicit `false` (zero
+      # absent_satisfied rows), so requiring zero is a statement about THIS build
+      # that CI can pin: a future IDF bump that drops one of those symbols turns
+      # build-idf red -- and with it both `release` and `deploy-pr-preview`, which
+      # need this job -- instead of shrinking coverage silently. Distinguishing the
+      # two causes of absence inside the checker needs active Kconfig evidence and
+      # remains #206; this flag does not pre-empt it.
       - name: Assert the release config gate ran, enforced, and passed (#202)
         run: |
           python3 idf_app/tools/assert_release_report.py \
             --report idf_app/build/config/rk_release_config.json \
             --config idf_app/build/config/sdkconfig.json \
             --expect-enforced true \
-            --expect-verdict pass
+            --expect-verdict pass \
+            --forbid-absent-satisfied
 
       # Assignments to undefined kconfig symbols are kconfgen's verdict, not ours;
       # the checker only consumes its exact warning from the build log.
@@ -573,7 +583,8 @@ jobs:
           python3 idf_app/tools/assert_release_report.py \
             --report "$report" \
             --expect-enforced true \
-            --expect-verdict pass
+            --expect-verdict pass \
+            --forbid-absent-satisfied
           python3 - <<'PY'
           import json, os
           with open("esp32s3-artifacts/idf_app/build/config/rk_release_config.json",
@@ -714,11 +725,17 @@ jobs:
   deploy-pr-preview:
     name: Deploy PR Preview
     runs-on: ubuntu-latest
-    # Gated by the fast host-only fixture job as well: a preview flashed to real
-    # hardware should not come from a tree whose checker logic is broken. The
-    # container-heavy build-stale-config is deliberately NOT a dependency here --
-    # it gates releases, and adding it would delay every preview by a full build.
-    needs: [build-idf, release-config-fixtures]
+    # Same three proof jobs as `release`, deliberately identical (#207): a preview
+    # is flashed to real hardware by whoever opens the PR link, so it should not
+    # come from a tree whose checker logic is broken (release-config-fixtures) OR
+    # whose proof that the gate actually BLOCKS is failing (build-stale-config).
+    # An earlier revision needed only the first two, on the grounds that the
+    # container-heavy job would delay every preview -- but build-stale-config
+    # already runs in every triggered workflow, including every pull-request run,
+    # so requiring it adds waiting, not a build. It also removes the asymmetry
+    # where a red wiring proof stopped a release but not a publicly flashable
+    # preview.
+    needs: [build-idf, release-config-fixtures, build-stale-config]
     if: github.event_name == 'pull_request'
     permissions:
       contents: write

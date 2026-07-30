@@ -11,12 +11,14 @@ enforced, and really passed -- over the same config file the build resolved.
 
 The claim stops exactly there. It is deliberately NOT "CI cannot opt out":
 
-* **Publication is gated**, by a real in-repo dependency: ``release`` declares
-  ``needs: [build-idf, release-config-fixtures, build-stale-config]`` and
-  ``deploy-pr-preview`` declares ``needs: [build-idf, release-config-fixtures]``.
-  Note the asymmetry those two lists create -- ``deploy-pr-preview`` does not need
-  ``build-stale-config``, so a red ``build-stale-config`` *alone* stops a release
-  but does **not** stop a flashable preview.
+* **Publication is gated**, by a real in-repo dependency: ``release`` *and*
+  ``deploy-pr-preview`` both declare
+  ``needs: [build-idf, release-config-fixtures, build-stale-config]``, so any one
+  of the three proof jobs red or skipped stops both a published firmware asset and
+  a flashable preview. An earlier revision of this docstring described an
+  asymmetry -- the preview path needing only two of the three, so a red
+  ``build-stale-config`` alone stopped a release but not a preview. That gap is
+  closed; the two lists are now identical.
 * **Merging is not gated.** Branch protection on ``master`` currently defines no
   required status checks, so a maintainer can merge with every #202 job red.
   Nothing in this file, or anywhere in this tree, changes that.
@@ -28,6 +30,11 @@ Assertions:
 * ``verdict`` matches ``--expect-verdict`` (default ``pass``)
 * with ``--config``, ``config_digest`` equals a locally computed sha256 of that
   file -- so a stale report from an earlier configure cannot be replayed
+* with ``--forbid-absent-satisfied``, no ``invariants[]`` row has status
+  ``absent_satisfied`` -- so a negative invariant that quietly stopped being
+  checked, because its symbol left the SDK schema, fails here instead of passing
+  green. This asserts the *caller's* knowledge of its own build, and changes no
+  checker semantics; the general fix is #206.
 
 Exit 0 when every assertion holds, 1 when any fails, 64 on bad usage.
 
@@ -109,6 +116,14 @@ def main(argv: list[str]) -> int:
                              "report's own claim about what was asked of it, and so cannot "
                              "prove the marker was ever required. Supply this from the "
                              "caller (CI) to make the log-identity check caller-owned.")
+    parser.add_argument("--forbid-absent-satisfied", action="store_true",
+                        help="fail if any invariants[] row has status "
+                             "'absent_satisfied'. Supply this only from a caller that "
+                             "knows its own build currently has none, so a negative "
+                             "invariant whose symbol later leaves the SDK schema turns "
+                             "the build red instead of silently going unchecked (#206). "
+                             "Asserts the caller's knowledge; changes no checker "
+                             "semantics.")
 
     def _usage_error(message: str) -> None:
         sys.stdout.write("%s: %s\n" % (TOKEN_USAGE, message))
@@ -200,6 +215,39 @@ def main(argv: list[str]) -> int:
                                     "logs_scanned[].markers_found: the log audited is not "
                                     "the one the gate wrote" % marker)
 
+        # Caller-owned coverage floor. `absent_satisfied` is the checker's correct
+        # reading of an expected-false symbol that is not written out -- absence
+        # means "not enabled" -- but it is also indistinguishable from the symbol
+        # having LEFT the SDK schema, in which case that invariant silently stops
+        # being checked and the report still says `pass`. Distinguishing the two
+        # needs active Kconfig evidence the checker does not have, which is why the
+        # general fix is #206 and why nothing here changes what the checker decides.
+        # What a caller CAN do is assert the shape of its own build: the release
+        # config resolves every negative invariant to an explicit `false` today, so
+        # zero such rows is a fact CI can pin. Supplied from the caller rather than
+        # derived from the report, for the same reason as --expect-log-marker: a
+        # report-sourced version of this check would have nothing to iterate over
+        # in exactly the case it is meant to catch.
+        if args.forbid_absent_satisfied:
+            rows = report.get("invariants")
+            if not isinstance(rows, list) or not rows:
+                failures.append("--forbid-absent-satisfied was requested but the report "
+                                "records no invariants[] rows, so there is nothing to "
+                                "check: this cannot be read as zero absent invariants")
+            else:
+                for index, row in enumerate(rows):
+                    if not isinstance(row, dict) or "status" not in row:
+                        failures.append("invariants[%d] is malformed: expected an object "
+                                        "with a status field, so absence coverage cannot be "
+                                        "checked" % index)
+                    elif row.get("status") == "absent_satisfied":
+                        failures.append("invariant %r is satisfied only by ABSENCE "
+                                        "(status=absent_satisfied): the expected-false "
+                                        "symbol may be legitimately hidden/off or may have "
+                                        "left the SDK schema; those causes are "
+                                        "indistinguishable here, so CI refuses the narrowed "
+                                        "coverage (see #206)" % row.get("name"))
+
         if args.config:
             local = sha256_file(args.config)
             if local is None:
@@ -214,11 +262,12 @@ def main(argv: list[str]) -> int:
             sys.stdout.write("%s: %s\n" % (TOKEN_FAIL, reason))
         return EXIT_FAIL
 
-    sys.stdout.write("%s: enforced=%s verdict=%s%s%s\n"
+    sys.stdout.write("%s: enforced=%s verdict=%s%s%s%s\n"
                      % (TOKEN_OK, args.expect_enforced, args.expect_verdict,
                         " digest-matched" if args.config else "",
                         " markers=%s" % ",".join(args.expect_log_marker)
-                        if args.expect_log_marker else ""))
+                        if args.expect_log_marker else "",
+                        " no-absent-satisfied" if args.forbid_absent_satisfied else ""))
     return EXIT_OK
 
 

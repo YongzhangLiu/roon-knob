@@ -315,6 +315,50 @@ expect "any/any still enforces the marker"  1 "does not show expected log marker
     -- "$PY" "$ASSERTER" --report "$FIX/report_logs_no_required_markers.json" \
        --expect-enforced any --expect-verdict any --expect-log-marker "RK-RELCFG-VERDICT:"
 
+echo "=== assert-the-assertion: absence-satisfied coverage must be caller-refusable ==="
+# The checker reads an absent expected-false symbol as satisfied and records
+# status `absent_satisfied` (#206 covers fixing that at the checker level, which
+# needs Kconfig evidence this tool does not have). Nothing below changes that
+# semantic: the same config still exits 0 with RK-RELCFG-OK, and the same report
+# is still accepted by an asserter invocation that does not ask. What the flag adds
+# is a CALLER's refusal -- for a build whose negative invariants are all explicitly
+# written out, zero such rows is a fact CI can pin, so a symbol leaving the SDK
+# schema turns red instead of going unchecked.
+"$PY" "$CHECKER" --config "$FIX/absent_debug_stubs.json" --enforced yes \
+    --report "$TMP/absent_satisfied.json" >/dev/null 2>&1
+expect "absence-satisfied row present in report" 0 "absent-satisfied-present" -- "$PY" -c "
+import json
+r=json.load(open('$TMP/absent_satisfied.json'))
+rows=[x for x in r['invariants'] if x['status']=='absent_satisfied']
+assert [x['name'] for x in rows]==['ESP_DEBUG_STUBS_ENABLE'], rows
+assert r['verdict']=='pass', r['verdict']   # checker semantics unchanged
+print('absent-satisfied-present')
+"
+expect "no absence-satisfied row ACCEPTED"  0 "no-absent-satisfied" \
+    -- "$PY" "$ASSERTER" --report "$TMP/enforced.json" --config "$FIX/pass.json" \
+       --forbid-absent-satisfied
+expect "absence-satisfied row REJECTED"     1 "satisfied only by ABSENCE" \
+    -- "$PY" "$ASSERTER" --report "$TMP/absent_satisfied.json" \
+       --config "$FIX/absent_debug_stubs.json" --forbid-absent-satisfied
+expect "...same report ACCEPTED without the flag" 0 "RK-RELCFG-ASSERT-OK" \
+    -- "$PY" "$ASSERTER" --report "$TMP/absent_satisfied.json" \
+       --config "$FIX/absent_debug_stubs.json"
+# A report carrying no invariants[] at all must not satisfy the flag by iterating
+# nothing -- the same vacuous-pass shape --expect-log-marker exists to close.
+expect "no invariants[] rows REJECTED"      1 "nothing to check" \
+    -- "$PY" "$ASSERTER" --report "$FIX/report_enforced_false.json" \
+       --expect-enforced any --forbid-absent-satisfied
+"$PY" -c "
+import json
+p='$TMP/malformed_invariant_row.json'
+r=json.load(open('$TMP/enforced.json'))
+r['invariants']=[{}]
+json.dump(r, open(p, 'w'))
+"
+expect "malformed invariant row REJECTED"   1 "invariants[0] is malformed" \
+    -- "$PY" "$ASSERTER" --report "$TMP/malformed_invariant_row.json" \
+       --forbid-absent-satisfied
+
 # The stale-config integration negative asserts its report this way.
 "$PY" "$CHECKER" --config "$FIX/opt_debug.json" --enforced yes --report "$TMP/stale.json" >/dev/null 2>&1
 expect "stale-config report is verdict:fail" 0 "RK-RELCFG-ASSERT-OK" \

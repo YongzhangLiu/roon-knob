@@ -30,13 +30,10 @@
 #   * CI's non-optionality is real but narrow. The workflow forces enforcement ON
 #     and then asserts this report on the host (tools/assert_release_report.py),
 #     so a build-idf job cannot run unenforced; and publication is gated via
-#     needs:. Be exact about WHICH publication, because the two consumers gate on
-#     DIFFERENT sets: `release` needs ALL THREE proof jobs -- needs: [build-idf,
-#     release-config-fixtures, build-stale-config] -- whereas deploy-pr-preview
-#     needs ONLY TWO -- needs: [build-idf, release-config-fixtures] -- and does
-#     NOT need build-stale-config. So a red build-stale-config ALONE stops a
-#     release but does NOT stop a flashable PR preview, which can still publish
-#     from a tree whose stale-config integration proof is failing. Two further
+#     needs:. Both publishing consumers gate on the SAME set: `release` and
+#     `deploy-pr-preview` each need ALL THREE proof jobs -- needs: [build-idf,
+#     release-config-fixtures, build-stale-config]. A red or skipped proof job
+#     therefore stops both a release and a flashable PR preview. Two further
 #     things none of this covers: deleting the host step is not detectable from
 #     inside the repo, and CI does not gate MERGING -- branch protection on
 #     master currently defines NO required status checks, so nothing here stops
