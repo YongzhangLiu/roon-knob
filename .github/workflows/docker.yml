@@ -59,6 +59,16 @@ jobs:
       # call all leave the report missing, unenforced, or describing another
       # config, and all three fail here. tools/test_check_release_config.sh proves
       # this assertion itself has teeth (assert-the-assertion cases).
+      # The ESP-IDF container runs as root with no --user, so everything it created
+      # under idf_app/build/ is root-owned on the host bind mount. Host `run:` steps
+      # execute as `runner` and may therefore only READ in there. Anything a host
+      # step needs to WRITE goes to $RUNNER_TEMP, which the runner owns and which is
+      # outside the tree (so no .gitignore entry is needed and nothing can dirty the
+      # working copy). Defined once here, consumed by name below, so the checker and
+      # the asserter cannot drift onto different paths.
+      - name: Define host-owned report path (#202)
+        run: echo "RK_LOG_SCAN_REPORT=$RUNNER_TEMP/rk_log_scan_report.json" >> "$GITHUB_ENV"
+
       - name: Assert the release config gate ran, enforced, and passed (#202)
         run: |
           python3 idf_app/tools/assert_release_report.py \
@@ -82,18 +92,55 @@ jobs:
             --log idf_app/rk-build.log \
             --log-must-contain 'RK-RELCFG-VERDICT:' \
             --enforced yes \
-            --report idf_app/build/config/rk_log_scan_report.json
+            --report "$RK_LOG_SCAN_REPORT"
 
       # ...and this proves the *report* records the log as read, so "no findings"
       # can never again be indistinguishable from "nothing was looked at".
+      #
+      # --expect-log-marker is supplied HERE, by the auditor, on purpose. The
+      # report's own logs_required_markers is the artifact's claim about what was
+      # asked of it: if a future edit drops --log-must-contain above, that list is
+      # empty and any check driven from it passes by iterating nothing. The
+      # expectation therefore has to come from the caller.
       - name: Assert the undefined-symbol scan actually read the build log (#202)
         run: |
           python3 idf_app/tools/assert_release_report.py \
-            --report idf_app/build/config/rk_log_scan_report.json \
+            --report "$RK_LOG_SCAN_REPORT" \
             --config idf_app/build/config/sdkconfig.json \
             --expect-enforced true \
             --expect-verdict pass \
-            --require-logs-read
+            --require-logs-read \
+            --expect-log-marker 'RK-RELCFG-VERDICT:'
+
+      # Evidence, published only after the assertions above have passed, so a
+      # summary can never announce a verdict that was not also enforced. This is
+      # what makes #189's release-blocking checklist satisfiable from CI output
+      # instead of from someone's recollection. No firmware behaviour is involved:
+      # the digest is of IDF's resolved config file, computed on the host, and #202
+      # adds no firmware-reported digest (see the ADR's #203 handoff).
+      - name: Publish release config evidence to the run summary (#202)
+        run: |
+          python3 - <<'PY'
+          import json, os
+          with open("idf_app/build/config/rk_release_config.json", encoding="utf-8") as fh:
+              r = json.load(fh)
+          rows = [
+              ("verdict", r.get("verdict")),
+              ("enforced", json.dumps(r.get("enforced"))),
+              ("config digest", r.get("config_digest")),
+              ("tokens", " ".join(r.get("tokens") or [])),
+              ("run", "%s run %s attempt %s" % (os.environ.get("GITHUB_REPOSITORY"),
+                                                os.environ.get("GITHUB_RUN_ID"),
+                                                os.environ.get("GITHUB_RUN_ATTEMPT"))),
+              ("commit", os.environ.get("GITHUB_SHA")),
+          ]
+          out = ["### Release config gate (#202)", "", "| field | value |", "|---|---|"]
+          out += ["| %s | `%s` |" % (k, v) for k, v in rows]
+          out.append("")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
+              fh.write("\n".join(out) + "\n")
+          print("\n".join(out))
+          PY
 
       - name: Create merged flash image for web flashing
         run: |
@@ -107,6 +154,11 @@ jobs:
             0x10000 idf_app/build/roon_knob.bin
           ls -la *.bin
 
+      # rk_release_config.json rides along with the firmware so the config that was
+      # gated is recoverable from the artifact months later, alongside the binary it
+      # describes (#202). if-no-files-found: error closes the same requested-artifact
+      # fail-open class as RK-RELCFG-NOREPORT: the default is `warn`, which would let
+      # a missing report -- or a missing binary -- pass as a green upload.
       - name: Upload ESP32-S3 artifact
         uses: actions/upload-artifact@v4
         with:
@@ -114,6 +166,8 @@ jobs:
           path: |
             idf_app/build/roon_knob.bin
             roon_knob_merged.bin
+            idf_app/build/config/rk_release_config.json
+          if-no-files-found: error
           retention-days: 30
 
   # Proves the checker's LOGIC and the host assertion's teeth. Host-only, no

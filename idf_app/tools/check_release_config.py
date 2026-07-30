@@ -49,16 +49,36 @@ Code  Token                       Meaning
 5     ``RK-RELCFG-NOLOG``         a log was *requested* via ``--log`` but is
                                   absent, unreadable, empty, or missing a marker
                                   required by ``--log-must-contain``
+6     ``RK-RELCFG-NOREPORT``      a report was *requested* via ``--report`` but
+                                  could not be written
 64    ``RK-RELCFG-USAGE``         bad invocation (distinct from every verdict)
 ===== =========================== =============================================
 
-**Precedence, when more than one condition holds:** ``NOCONFIG`` > ``NOLOG`` >
-``UNDEFINED`` > ``VIOLATION``. The first three mean the checker could not make a
-trustworthy determination and must not be reported as a mere policy violation.
-Every applicable token is still printed and recorded in the report, so nothing is
-hidden by the precedence; only the *exit code* is single-valued. In particular a
-config that is both undefined and violating exits 4 while the violation rows
-remain visible in the report's ``invariants``.
+**Precedence, when more than one condition holds:**
+
+```
+NOCONFIG (3)  >  NOREPORT (6)  >  NOLOG (5)  >  UNDEFINED (4)  >  VIOLATION (2)
+```
+
+The first three mean the checker could not make, or could not record, a
+trustworthy determination, and must not be reported as a mere policy violation.
+Every applicable token is still printed, so nothing is hidden by the precedence;
+only the *exit code* is single-valued. A config that is both undefined and
+violating exits 4 while the violation rows remain visible in the report's
+``invariants``.
+
+**A requested report that cannot be written is a failure, and the verdict cannot
+be "pass".** ``--report`` is the artifact CI audits, so writing nothing while
+printing ``RK-RELCFG-OK`` would be the same fail-open asymmetry as treating a
+missing ``--log`` as silence. When the write fails, the ``OK`` token is withdrawn,
+``RK-RELCFG-NOREPORT`` is emitted, the printed verdict becomes ``fail``, and the
+exit code becomes 6 (or stays 3 if the config was also unusable). Passing no
+``--report`` is different and legitimate — no artifact was requested, so none is
+owed.
+
+The report is written **atomically** (temp file plus ``os.replace``) so a failure
+partway through can never leave a truncated file that a later reader would parse
+as a pass.
 
 **A requested log that cannot be read is a failure, not silence.** ``--log`` is
 how the kconfgen-delegated undefined-symbol determination reaches this checker,
@@ -95,6 +115,7 @@ EXIT_VIOLATION = 2
 EXIT_NOCONFIG = 3
 EXIT_UNDEFINED = 4
 EXIT_NOLOG = 5
+EXIT_NOREPORT = 6
 EXIT_USAGE = 64
 
 TOKEN_OK = "RK-RELCFG-OK"
@@ -102,6 +123,7 @@ TOKEN_VIOLATION = "RK-RELCFG-VIOLATION"
 TOKEN_NOCONFIG = "RK-RELCFG-NOCONFIG"
 TOKEN_UNDEFINED = "RK-RELCFG-UNDEFINED"
 TOKEN_NOLOG = "RK-RELCFG-NOLOG"
+TOKEN_NOREPORT = "RK-RELCFG-NOREPORT"
 TOKEN_USAGE = "RK-RELCFG-USAGE"
 
 # kconfgen's own wording, from esp-idf-kconfig's defaults-loading path. Verified
@@ -387,7 +409,13 @@ def main(argv: list[str]) -> int:
         "tokens": tokens,
         "config_path": os.path.abspath(args.config),
         "config_digest": digest,
-        "defaults": [{"path": os.path.abspath(p), "digest": sha256_file(p)}
+        # Provenance only, and deliberately non-failing: --defaults is never
+        # parsed, so nothing is inferred from a defaults file being absent and it
+        # cannot make any determination fail open. `readable` is recorded so a
+        # mis-wired path is still visible rather than merely implied by a null.
+        "defaults": [{"path": os.path.abspath(p),
+                      "digest": sha256_file(p),
+                      "readable": sha256_file(p) is not None}
                      for p in args.defaults],
         "invariants": rows,
         "undefined_symbols": undefined,
@@ -397,17 +425,38 @@ def main(argv: list[str]) -> int:
         "log_problems": log_problems,
     }
 
+    # A requested report that cannot be written is a determination that cannot be
+    # recorded, which is not a trustworthy pass. Written atomically so a partial
+    # file can never be parsed as a pass by a later reader.
+    report_problem: str | None = None
     if args.report:
+        tmp_path = args.report + ".tmp"
         try:
             parent = os.path.dirname(os.path.abspath(args.report))
             if parent:
                 os.makedirs(parent, exist_ok=True)
-            with open(args.report, "w", encoding="utf-8") as handle:
+            with open(tmp_path, "w", encoding="utf-8") as handle:
                 json.dump(report, handle, indent=2, sort_keys=True)
                 handle.write("\n")
+            os.replace(tmp_path, args.report)
             lines.append("RK-RELCFG-REPORT: %s" % args.report)
         except OSError as exc:
-            lines.append("RK-RELCFG-REPORT-ERROR: %s" % exc.__class__.__name__)
+            report_problem = "requested report could not be written (%s): %s" \
+                             % (exc.__class__.__name__, args.report)
+            try:
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+            except OSError:
+                pass
+
+    if report_problem:
+        # Withdraw OK: nothing may print a passing verdict after failing to
+        # produce the artifact CI audits. NOCONFIG still outranks NOREPORT.
+        tokens = [t for t in tokens if t != TOKEN_OK]
+        tokens.append("%s: %s" % (TOKEN_NOREPORT, report_problem))
+        verdict = "fail"
+        if cfg is not None:
+            exit_code = EXIT_NOREPORT
 
     if args.enforced == "yes":
         lines.append("RK-RELCFG-ENFORCED: violations fail the build")

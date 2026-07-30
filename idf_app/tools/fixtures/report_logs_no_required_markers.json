@@ -1,0 +1,26 @@
+{
+  "_comment": "A report that read a log but records NO required markers -- what the artifact looks like after a workflow edit silently drops --log-must-contain. --require-logs-read alone ACCEPTS this (its marker loop iterates zero times), which is exactly why the log-identity marker must be supplied by the caller: --expect-log-marker must REJECT it.",
+  "config_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "config_path": "/app/muness/roon-knob/idf_app/build/config/sdkconfig.json",
+  "defaults": [],
+  "enforced": true,
+  "exit_code": 0,
+  "invariants": [],
+  "issue": 202,
+  "log_problems": [],
+  "logs_required_markers": [],
+  "logs_requested": 1,
+  "logs_scanned": [
+    {
+      "bytes": 204800,
+      "markers_found": [],
+      "path": "/app/muness/roon-knob/idf_app/rk-build.log",
+      "read": true,
+      "unknown_symbols": []
+    }
+  ],
+  "schema": "rk-release-config/1",
+  "tokens": ["RK-RELCFG-OK"],
+  "undefined_symbols": [],
+  "verdict": "pass"
+}

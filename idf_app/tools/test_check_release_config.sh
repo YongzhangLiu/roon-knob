@@ -131,7 +131,56 @@ refute "NOLOG path never echoes values"  "fixture-value-must-never-be-echoed" \
     -- "$PY" "$CHECKER" --config "$FIX/pass.json" --log "$FIX/kconfgen_undefined.log" \
        --log-must-contain "RK-RELCFG-VERDICT:"
 
-echo "=== checker: token precedence NOCONFIG > NOLOG > UNDEFINED > VIOLATION ==="
+echo "=== checker: a REQUESTED report that cannot be written is a failure ==="
+# Destinations chosen to fail for STRUCTURAL reasons, not permission reasons, so
+# these cases are deterministic on every platform and are not skipped when the
+# suite runs as root (where chmod 555 would be ignored):
+#   * parent component is an existing FILE -> makedirs raises
+#   * destination is an existing DIRECTORY -> open() raises
+expect "report parent is a file -> NOREPORT" 6 "RK-RELCFG-NOREPORT: requested report could not be written" \
+    -- "$PY" "$CHECKER" --config "$FIX/pass.json" --report "$FIX/pass.json/report.json"
+expect "report dest is a directory -> NOREPORT" 6 "RK-RELCFG-NOREPORT: requested report could not be written" \
+    -- "$PY" "$CHECKER" --config "$FIX/pass.json" --report "$TMP"
+expect "no OK token after a failed write" 6 "RK-RELCFG-VERDICT: fail" \
+    -- "$PY" "$CHECKER" --config "$FIX/pass.json" --report "$FIX/pass.json/report.json" --enforced yes
+refute "OK is withdrawn, not merely joined" "RK-RELCFG-OK" \
+    -- "$PY" "$CHECKER" --config "$FIX/pass.json" --report "$FIX/pass.json/report.json" --enforced yes
+expect "no --report requested -> not a failure" 0 "RK-RELCFG-OK" \
+    -- "$PY" "$CHECKER" --config "$FIX/pass.json" --enforced yes
+# A partial report must never be left where a reader would parse it as a pass.
+expect "atomic write leaves no .tmp residue" 0 "no-tmp-residue" -- "$PY" -c "
+import os, subprocess, sys
+dest = '$TMP/atomic.json'
+subprocess.run([sys.executable, '$CHECKER', '--config', '$FIX/pass.json',
+                '--report', dest], capture_output=True, cwd='$PWD')
+assert os.path.exists(dest), 'report missing'
+assert not os.path.exists(dest + '.tmp'), 'temp file left behind'
+print('no-tmp-residue')
+"
+
+echo "=== checker: ;-to-, sanitation for fail_at_build_time's ARGN split ==="
+# CMake's fail_at_build_time() does foreach(line \${ARGN}), which splits on ';'.
+# Drive a ';' through the real emit path via a reported path and a marker, and
+# require it to come out as ',' -- asserted here, not only reasoned about.
+expect "semicolon in emitted path becomes comma" 0 "semi,colon.json" \
+    -- "$PY" "$CHECKER" --config "$FIX/pass.json" --report "$TMP/semi;colon.json"
+refute "no raw semicolon survives to output"  "semi;colon.json" \
+    -- "$PY" "$CHECKER" --config "$FIX/pass.json" --report "$TMP/semi;colon2.json"
+expect "semicolon in NOLOG reason becomes comma" 5 "marker 'a,b'" \
+    -- "$PY" "$CHECKER" --config "$FIX/pass.json" --log "$FIX/kconfgen_rename.log" \
+       --log-must-contain "a;b"
+
+echo "=== checker: token precedence NOCONFIG > NOREPORT > NOLOG > UNDEFINED > VIOLATION ==="
+expect "NOCONFIG outranks NOREPORT"  3 "RK-RELCFG-NOCONFIG" \
+    -- "$PY" "$CHECKER" --config "$FIX/malformed.json" --report "$FIX/pass.json/report.json"
+expect "NOREPORT outranks NOLOG"     6 "RK-RELCFG-NOREPORT" \
+    -- "$PY" "$CHECKER" --config "$FIX/pass.json" --log "$TMP/never_written.log" \
+       --report "$FIX/pass.json/report.json"
+expect "NOREPORT outranks UNDEFINED" 6 "RK-RELCFG-UNDEFINED: CONFIG_WIFI_SSID" \
+    -- "$PY" "$CHECKER" --config "$FIX/pass.json" --log "$FIX/kconfgen_undefined.log" \
+       --report "$FIX/pass.json/report.json"
+expect "NOREPORT outranks VIOLATION"  6 "RK-RELCFG-VIOLATION: COMPILER_OPTIMIZATION_DEBUG" \
+    -- "$PY" "$CHECKER" --config "$FIX/opt_debug.json" --report "$FIX/pass.json/report.json"
 expect "NOCONFIG outranks NOLOG"    3 "RK-RELCFG-NOCONFIG" \
     -- "$PY" "$CHECKER" --config "$FIX/malformed.json" --log "$TMP/never_written.log"
 expect "NOLOG outranks UNDEFINED"   5 "RK-RELCFG-NOLOG" \
@@ -213,6 +262,24 @@ expect "unread log REJECTED"           1 "report says log was not read" \
     -- "$PY" "$ASSERTER" --report "$FIX/report_logs_unread.json" --require-logs-read
 expect "no log scanned REJECTED"       1 "report proves no log was read" \
     -- "$PY" "$ASSERTER" --report "$TMP/enforced.json" --config "$FIX/pass.json" --require-logs-read
+
+echo "=== assert-the-assertion: log identity must be CALLER-owned ==="
+# The report cannot be its own witness that a marker was required: if a workflow
+# edit drops --log-must-contain, logs_required_markers is [] and any check driven
+# from it iterates zero times. These three cases pin that gap shut.
+expect "empty marker metadata still ACCEPTED by --require-logs-read" 0 "RK-RELCFG-ASSERT-OK" \
+    -- "$PY" "$ASSERTER" --report "$FIX/report_logs_no_required_markers.json" --require-logs-read
+expect "...but REJECTED by --expect-log-marker" 1 "does not show expected log marker" \
+    -- "$PY" "$ASSERTER" --report "$FIX/report_logs_no_required_markers.json" \
+       --require-logs-read --expect-log-marker "RK-RELCFG-VERDICT:"
+expect "self-consistent WRONG log REJECTED" 1 "not the one the gate wrote" \
+    -- "$PY" "$ASSERTER" --report "$FIX/report_logs_wrong_marker.json" \
+       --require-logs-read --expect-log-marker "RK-RELCFG-VERDICT:"
+expect "expected marker with no scanned log REJECTED" 1 "scanned no log" \
+    -- "$PY" "$ASSERTER" --report "$TMP/enforced.json" --expect-log-marker "RK-RELCFG-VERDICT:"
+expect "real gate report satisfies the caller marker" 0 "RK-RELCFG-ASSERT-OK" \
+    -- "$PY" "$ASSERTER" --report "$TMP/withlog.json" --config "$FIX/pass.json" \
+       --require-logs-read --expect-log-marker "Configuring done"
 
 # The stale-config integration negative asserts its report this way.
 "$PY" "$CHECKER" --config "$FIX/opt_debug.json" --enforced yes --report "$TMP/stale.json" >/dev/null 2>&1

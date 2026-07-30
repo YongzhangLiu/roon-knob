@@ -1,0 +1,26 @@
+{
+  "_comment": "A self-consistent report over the WRONG log: it required and found a marker, just not the gate's own RK-RELCFG-VERDICT:. Passes both --require-logs-read and the report-sourced marker cross-check, so only the caller-owned --expect-log-marker can reject it.",
+  "config_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "config_path": "/app/muness/roon-knob/idf_app/build/config/sdkconfig.json",
+  "defaults": [],
+  "enforced": true,
+  "exit_code": 0,
+  "invariants": [],
+  "issue": 202,
+  "log_problems": [],
+  "logs_required_markers": ["-- Configuring done"],
+  "logs_requested": 1,
+  "logs_scanned": [
+    {
+      "bytes": 512,
+      "markers_found": ["-- Configuring done"],
+      "path": "/app/muness/roon-knob/idf_app/some-other.log",
+      "read": true,
+      "unknown_symbols": []
+    }
+  ],
+  "schema": "rk-release-config/1",
+  "tokens": ["RK-RELCFG-OK"],
+  "undefined_symbols": [],
+  "verdict": "pass"
+}

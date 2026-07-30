@@ -130,15 +130,19 @@ This is what keeps "absent ≠ pass" honest without manufacturing false positive
 
 The same principle governs a **requested but unreadable log**: `--log` is how kconfgen's undefined-symbol verdict reaches the checker, so an absent, unreadable or empty log is `RK-RELCFG-NOLOG` (exit 5), never silence. Passing no `--log` is different and legitimate — the determination is simply not requested, which is the configure-time gate's case — and never fails on that basis. In CI the log is additionally required to contain `RK-RELCFG-VERDICT:`, which proves the log read is the one the gate itself wrote rather than some other file that happened to exist.
 
+And the same principle again for the **report**: a `--report` that was requested but could not be written is `RK-RELCFG-NOREPORT` (exit 6), and the `OK` token is withdrawn so no passing verdict can be printed after failing to produce the artifact CI audits. A determination that cannot be recorded is not a trustworthy pass. The report is written atomically (temp file plus rename) so a failure partway through cannot leave a truncated file for a later reader to parse as a pass. Passing no `--report` is, again, different and legitimate.
+
+That leaves `--defaults` as the one deliberately non-failing channel: it is provenance only, never parsed, so nothing is inferred from its absence and it cannot make any determination fail open. Its entries record `readable` so a mis-wired path is still visible. This is a decision, not an oversight.
+
 ### Token precedence
 
 When several conditions hold at once, **every** applicable token is printed and recorded in the report; only the exit code is single-valued, resolved as:
 
 ```
-NOCONFIG (3)  >  NOLOG (5)  >  UNDEFINED (4)  >  VIOLATION (2)
+NOCONFIG (3)  >  NOREPORT (6)  >  NOLOG (5)  >  UNDEFINED (4)  >  VIOLATION (2)
 ```
 
-The first three mean *no trustworthy determination was made* and must outrank a mere policy violation — reporting "the optimization mode is wrong" when the real problem is "the config could not be parsed" would send the reader to the wrong place. Nothing is hidden by the precedence: a config that is both undefined and violating exits 4 while its violation rows remain visible in the report's `invariants`, and fixtures assert exactly that.
+The first three mean *no trustworthy determination was made, or none could be recorded*, and must outrank a mere policy violation — reporting "the optimization mode is wrong" when the real problem is "the config could not be parsed" would send the reader to the wrong place. Nothing is hidden by the precedence: a config that is both undefined and violating exits 4 while its violation rows remain visible in the report's `invariants`, and fixtures assert exactly that for every ordering.
 
 ### Not asserted here
 
@@ -191,7 +195,7 @@ Note on line 2: it is removed because kconfgen proves it is undefined and inert,
 
 ### `SDKCONFIG_DEFAULTS` precedence — corrected
 
-`tools/cmake/project.cmake:654` seeds `_sdkconfig_defaults` from `$ENV{SDKCONFIG_DEFAULTS}`, and `:665-667` then overwrite it from the `-D` **cache variable**. So `-DSDKCONFIG_DEFAULTS` **wins over the environment**. This matters twice: it is why the measurement's isolation against `scripts/install.sh`'s exported `sdkconfig.defaults;sdkconfig.local` was real rather than redundant, and it is one of the override paths that makes the defaults file untrustworthy as evidence.
+In `tools/cmake/project.cmake`, `_sdkconfig_defaults` is first seeded from `$ENV{SDKCONFIG_DEFAULTS}` and then, a few lines later, overwritten from the `SDKCONFIG_DEFAULTS` **cache variable** when one is set. So `-DSDKCONFIG_DEFAULTS` **wins over the environment**. (Stated by symbol rather than by line number, per the convention above; locate with `grep -n SDKCONFIG_DEFAULTS $IDF_PATH/tools/cmake/project.cmake`.) This matters twice: it is why the measurement's isolation against `scripts/install.sh`'s exported `sdkconfig.defaults;sdkconfig.local` was real rather than redundant, and it is one of the override paths that makes the defaults file untrustworthy as evidence.
 
 ### Why `fail_at_build_time()` and not `FATAL_ERROR`
 
@@ -216,6 +220,14 @@ Two hardening requirements at the call site, both verified as real and both impl
 4. `RK_ENFORCE_RELEASE_CONFIG=OFF` is a CMake **cache** variable: once set in a build tree it persists for every subsequent build in that tree, with no further mention on the command line. The multi-line `*** RELEASE CONFIG INVARIANTS NOT ENFORCED ***` banner is re-emitted on every configure precisely so that state stays visible rather than silently inherited; if you are ever unsure whether a local artifact was gated, grep the build log for that banner.
 5. The undefined-symbol layer is enforced **in CI, not at configure time**, because `kconfig.cmake` does not capture kconfgen's stdout for the checker to read. Locally an undefined default warns in kconfgen's own output but does not fail the build. This ceiling was previously worse than stated: a requested log that was absent, empty or unreadable used to be treated as "nothing found" and exit 0, which made the CI half fail *open*. That is now `RK-RELCFG-NOLOG` (exit 5), and CI additionally requires the log to contain `RK-RELCFG-VERDICT:` so a renamed or dropped `tee` cannot pass vacuously.
 
+### Two rules for anything added to `build-idf` later
+
+Both were learned the expensive way and are cheap to honour:
+
+**Host steps may only READ under `idf_app/build/`.** The ESP-IDF container runs as root with no `--user` and the action passes no `-u`, so every path the container creates on the bind mount — including `build/config/` — is root-owned, while host `run:` steps execute as `runner`. An earlier revision of this work pointed the host log-scan `--report` at `idf_app/build/config/`, which no host step can write to. Anything a host step must write belongs in `$RUNNER_TEMP`; the path is defined once into `$GITHUB_ENV` so the writer and the reader cannot drift apart. Note what made this dangerous rather than merely broken: the checker swallowed the write failure and exited 0, so the *following* step failed with "no report … (checker did not run, or CMake call removed)" — a permission problem wearing a deleted-gate costume, whose cheapest-looking fix is deleting the assertion. That is why `RK-RELCFG-NOREPORT` exists.
+
+**An auditor must not take its expectations from the artifact it audits.** `--require-logs-read` originally checked the log-identity marker against the report's own `logs_required_markers`. If a workflow edit drops `--log-must-contain`, that list is empty, the check iterates zero times, and the assertion passes while proving nothing. CI therefore supplies `--expect-log-marker 'RK-RELCFG-VERDICT:'` from the caller side, checked against what the report says it *observed*. Fixtures pin the gap shut, including a report that is internally self-consistent about having read the wrong log.
+
 ### `ESPTOOLPY_FLASHSIZE` = 16MB vs the 8MB merge — deliberately unresolved
 
 `sdkconfig.defaults` declares `CONFIG_ESPTOOLPY_FLASHSIZE="16MB"` while `.github/workflows/docker.yml`'s `esptool merge-bin` step passes `--flash-size 8MB`. That disagreement is real. #202 asserts the config value **only at what the committed defaults already declare**, touches no image header, and takes **no position** on the correct direction. Resolving it belongs to **#203** (with #193 for hardware identity).
@@ -238,7 +250,9 @@ These jobs **require** evidence rather than merely producing it. `release` decla
 
 It never calls `set-target`, which would rename the seeded `sdkconfig` to `sdkconfig.old` and destroy the condition under test.
 
-Exit codes are contract, asserted by fixtures: `0` OK, `2` violation, `3` no/malformed config, `4` undefined, `5` requested log absent/unreadable/empty/missing its marker, `64` usage error (distinct from every verdict). Precedence is documented above.
+Exit codes are contract, asserted by fixtures: `0` OK, `2` violation, `3` no/malformed config, `4` undefined, `5` requested log absent/unreadable/empty/missing its marker, `6` requested report unwritable, `64` usage error (distinct from every verdict). Precedence is documented above.
+
+The unwritable-report fixtures fail for **structural** reasons — the report's parent path component is an existing file, or the destination is an existing directory — rather than by `chmod`. Permission-based fixtures are not deterministic: they silently pass as writable when the suite runs as root, which is exactly the environment where a fail-open would matter least to detect and most to have.
 
 ## #149's guard: restored and re-scoped
 
@@ -268,6 +282,17 @@ It is restored rather than merely superseded because of one non-substitutable co
 * Hardware validation is release-blocking but **not** merge-blocking: #202 merges on contract/CI evidence; #203's PR build (containing both #202 and #203) is the single combined hardware-test candidate; the release-blocking checklist lives on #189 and blocks **tagging**, not merging.
 * New CI surface: enforcement forcing plus three host assertions in `build-idf`, one host fixture job, and one integration build that now runs on every push. The known adoption risk is that a red-for-infrastructure-reasons job gets `continue-on-error` or is quietly dropped during #203's workflow edit. Three things push against that: the fixtures job is seconds and host-only, the ADR names the required response to a drift-induced red build (remeasure and review, never allowlist), and both proof jobs are now in `release`'s `needs:` so dropping them is a visible change to the shipping path rather than a quiet one.
 
+## Evidence that outlives the run
+
+The gate is only useful later if its verdict is recoverable later. Two cheap, firmware-free additions:
+
+* `idf_app/build/config/rk_release_config.json` now rides along in the existing `esp32s3-firmware` artifact, next to the binary it describes, with `if-no-files-found: error` so a missing report (or a missing binary) cannot pass as a green upload — the same requested-artifact fail-open class as `RK-RELCFG-NOREPORT`, closed in the same pass rather than one channel at a time.
+* After the assertions pass — never before, so a summary cannot announce a verdict that was not also enforced — `build-idf` writes verdict, enforced state, config digest, tokens, and the run identity (`repository`, run id, attempt, commit) to `$GITHUB_STEP_SUMMARY`.
+
+Together these make #189's release-blocking checklist satisfiable from CI output rather than from recollection. The log-scan report stays host-temporary in `$RUNNER_TEMP` deliberately: it is a transient proof that a log was read, not a description of the shipped configuration, and persisting it would invite reading the wrong one of the two reports.
+
+**No firmware-reported digest exists, and #202 adds none.** #189's checklist wording asks for a firmware-reported release-config digest reconciled against the CI report; nothing in `idf_app/main` or `idf_app/components` embeds or reports one, and adding it would be firmware behaviour, which #202 excludes. So that half of the checklist item is **knowingly deferred to #203**, not silently waived — see the handoff below. What #202 does provide is the CI-side half: a persisted report and a run summary that a human can reconcile against the flashed build.
+
 ## Handoff to #203
 
 Carry these forward when #203 opens; they are consequences of #202, not #202's own scope:
@@ -286,6 +311,12 @@ Carry these forward when #203 opens; they are consequences of #202, not #202's o
 7. **Battery brownout at `-Os`** against the level-4 / 2.50 V tuning, on battery, through Wi-Fi association inrush.
 8. **Boot and OTA from a prior `-Og` release**, confirming the mode change does not break the update path.
 9. Board revision recorded, plus the enforcement banner and a `sha256sum` reconcilable with the CI artifact.
+10. **A firmware-reported release-config digest**, if #189's checklist wording is to be met literally. #202 adds none — that is firmware behaviour and out of its scope — so #203 either implements it or the checklist item is amended to accept the CI-side evidence (persisted report + run summary) that #202 does provide.
+
+## Acceptance bookkeeping
+
+* **AC 11 (update #181 to remove any cleanup item completed here): satisfied.** The `## Stale kconfig symbols in sdkconfig.defaults` section, naming all four symbols this work removed, was deleted from #181 by a content edit recorded at `2026-07-30T00:04:06Z` and confirmed through the issue's `userContentEdits` history. #181's remaining scope — the `bridge_client.c` dead-code warnings and the ESP-IDF 6.0 bump — is untouched and the issue stays open, which is correct. (A reading that #181 "never contained anything #202 completed" is contradicted by that edit history; the section existed and was removed.)
+* Ticking #202's own acceptance checkboxes and #189's execution-split box is ship-phase bookkeeping, deliberately left for when the amended commit reaches PR #204.
 
 If 5–8 regress, the remedy is the one-line SIZE→PERF switch in `sdkconfig.defaults`, which the gate still checks — not disabling the gate.
 
