@@ -48,14 +48,14 @@ jobs:
         uses: actions/cache@v5
         with:
           path: .ci/ccache
-          key: ${{ runner.os }}-esp-idf-v5.4-ccache-${{ github.sha }}
+          key: ${{ runner.os }}-esp-idf-v5.4.3-ccache-${{ github.sha }}
           restore-keys: |
-            ${{ runner.os }}-esp-idf-v5.4-ccache-
+            ${{ runner.os }}-esp-idf-v5.4.3-ccache-
 
       - name: Build with ESP-IDF
         uses: espressif/esp-idf-ci-action@v1
         with:
-          esp_idf_version: release-v5.4
+          esp_idf_version: v5.4.3
           target: esp32s3
           path: idf_app
           extra_docker_args: >-

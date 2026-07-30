@@ -79,7 +79,7 @@ volume, zones, playlists, and programs.
   relevant display/input/connectivity checks on physical hardware.
 - CI release builds must use an optimized, evidence-backed configuration. The
   current recovery baseline carries v4's non-debug build settings onto master
-  (PERF optimization, the released ESP-IDF 5.4 line, and a 16 MB merged image); runtime or memory
+  (PERF optimization, ESP-IDF 5.4.3 used by the last working release, and a 16 MB merged image); runtime or memory
   profile changes need their own hardware evidence.
 - This is a side project: prefer incremental factoring with shippable slices over
   an unbounded rewrite.

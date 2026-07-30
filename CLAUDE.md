@@ -145,7 +145,8 @@ idf.py build
 See [docs/dev/KCONFIG.md](docs/dev/KCONFIG.md) for details.
 
 ### ESP-IDF Version
-CI currently uses ESP-IDF `release-v5.4`. Use the same release line locally when
+CI currently uses ESP-IDF `v5.4.3`, matching the last working release. Use that
+exact version locally when
 reproducing CI or hardware behavior; version changes are explicit migration work.
 
 ### Target Chip
