@@ -234,12 +234,14 @@ jobs:
           BUILD_SHA: ${{ github.sha }}
         run: |
           mkdir -p pr-preview
+          MANIFEST_FILE="manifest-s3-${BUILD_SHA}.json"
+          FLASH_PAGE="flash-${BUILD_SHA}.html"
 
           # Copy firmware
           cp esp32s3-artifacts/roon_knob_merged.bin pr-preview/
 
-          # Create PR-specific manifest
-          cat > pr-preview/manifest-s3.json << EOF
+          # Immutable preview paths avoid stale GitHub Pages CDN entries.
+          cat > "pr-preview/${MANIFEST_FILE}" << EOF
           {
             "name": "Roon Knob (PR #${PR_NUM} Preview)",
             "version": "pr-${PR_NUM}",
@@ -254,11 +256,11 @@ jobs:
           }
           EOF
 
-          # Create PR flash page from template
+          # Create a page that points at the manifest for this exact build.
           sed \
             -e "s/{{PR_NUMBER}}/${PR_NUM}/g" \
-            -e "s|manifest-s3.json|manifest-s3.json?sha=${BUILD_SHA}|g" \
-            web/flash-pr.html > pr-preview/flash.html
+            -e "s|manifest-s3.json|${MANIFEST_FILE}|g" \
+            web/flash-pr.html > "pr-preview/${FLASH_PAGE}"
 
           echo "PR preview contents:"
           ls -la pr-preview/
@@ -273,10 +275,12 @@ jobs:
 
       - name: Post preview URL to PR
         uses: actions/github-script@v8
+        env:
+          BUILD_SHA: ${{ github.sha }}
         with:
           script: |
             const prNumber = context.payload.pull_request.number;
-            const previewUrl = `https://roon-knob.muness.com/pr/${prNumber}/flash.html`;
+            const previewUrl = `https://roon-knob.muness.com/pr/${prNumber}/flash-${process.env.BUILD_SHA}.html`;
 
             // Check if we already posted a comment
             const comments = await github.rest.issues.listComments({
