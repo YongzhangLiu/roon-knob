@@ -39,30 +39,23 @@ jobs:
           sed -i 's/set(PROJECT_VER ".*")/set(PROJECT_VER "${{ steps.version.outputs.version }}")/' idf_app/CMakeLists.txt
           grep PROJECT_VER idf_app/CMakeLists.txt
 
-      # Component downloads are deterministic because dependencies.lock is
-      # committed. Do not cache build/: it contains generated sdkconfig, CMake
-      # state, and firmware that must be regenerated for the checked-out SHA.
-      - name: Restore ESP-IDF managed components
-        uses: actions/cache@v5
-        with:
-          path: idf_app/managed_components
-          key: ${{ runner.os }}-esp-idf-v5.5-components-${{ hashFiles('idf_app/dependencies.lock') }}
-
-      # The IDF image already enables ccache. Restoring it by prefix lets source
+      # Do not cache build/: it contains generated sdkconfig, CMake state, and
+      # firmware that must be regenerated for the checked-out SHA. The IDF image
+      # enables ccache; restoring it by prefix lets source
       # changes reuse prior object compilation while a distinct SHA key saves the
       # updated cache after each successful build.
       - name: Restore ESP-IDF compiler cache
         uses: actions/cache@v5
         with:
           path: .ci/ccache
-          key: ${{ runner.os }}-esp-idf-v5.5-ccache-${{ github.sha }}
+          key: ${{ runner.os }}-esp-idf-v5.4-ccache-${{ github.sha }}
           restore-keys: |
-            ${{ runner.os }}-esp-idf-v5.5-ccache-
+            ${{ runner.os }}-esp-idf-v5.4-ccache-
 
       - name: Build with ESP-IDF
         uses: espressif/esp-idf-ci-action@v1
         with:
-          esp_idf_version: release-v5.5
+          esp_idf_version: release-v5.4
           target: esp32s3
           path: idf_app
           extra_docker_args: >-

@@ -7,6 +7,7 @@ sdkconfig
 sdkconfig.old
 sdkconfig.local
 idf_*.log
+idf_app/dependencies.lock
 .ci/ccache/
 
 # Node modules
