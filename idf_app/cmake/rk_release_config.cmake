@@ -138,33 +138,92 @@ string(REPLACE ";" "," rk_relcfg_safe "${rk_relcfg_text}")
 string(REGEX REPLACE "\r?\n" ";" rk_relcfg_lines "${rk_relcfg_safe}")
 list(FILTER rk_relcfg_lines EXCLUDE REGEX "^[ \t]*$")
 
-# Line 0 is the checker's FIRST RK-RELCFG-* token when it emitted one, otherwise a
-# synthesized RK-RELCFG-INTERNAL line. Ambient noise is never discarded -- only
-# demoted below that header -- so nothing diagnostic is lost, and a token found
-# further down the capture (interpreter noise on stdout, verdict on stderr) still
-# gets to name the failure. Anchored, so a noise line that merely MENTIONS a token
-# further along cannot claim line 0.
-set(rk_relcfg_line0 "")
-set(rk_relcfg_line0_index 0)
-foreach(rk_relcfg_line IN LISTS rk_relcfg_lines)
-    if(rk_relcfg_line MATCHES "^[ \t]*RK-RELCFG-")
-        set(rk_relcfg_line0 "${rk_relcfg_line}")
-        break()
-    endif()
-    math(EXPR rk_relcfg_line0_index "${rk_relcfg_line0_index} + 1")
-endforeach()
+# Line 0 must be the GOVERNING verdict -- the one determination that explains why
+# this build is being failed -- and "first RK-RELCFG-* line wins" does not deliver
+# that, because most of the checker's tokens are metadata rather than verdicts. Its
+# real output for a violating tree begins:
+#
+#     RK-RELCFG-REPORT: <path>            <- where the report was written
+#     RK-RELCFG-ENFORCED: ...             <- what mode the gate ran in
+#     RK-RELCFG-VIOLATION: <symbol>       <- the actual verdict
+#
+# so a positional rule heads the build failure with a build-directory path. Worse,
+# position does not even track precedence: a violating tree whose report cannot be
+# written exits 6 (NOREPORT outranks VIOLATION -- a determination that could not be
+# recorded is not a trustworthy failure report either) while still printing
+# VIOLATION first, so the positional rule names a verdict the checker did not
+# govern by.
+#
+# Selection is therefore keyed to the checker's documented exit code, which IS the
+# governing determination -- the same contract CI reads -- rather than to output
+# order, which is a presentation detail.
+set(rk_relcfg_expect "")
+if(rk_relcfg_result STREQUAL "2")
+    set(rk_relcfg_expect "RK-RELCFG-VIOLATION")
+elseif(rk_relcfg_result STREQUAL "3")
+    set(rk_relcfg_expect "RK-RELCFG-NOCONFIG")
+elseif(rk_relcfg_result STREQUAL "4")
+    set(rk_relcfg_expect "RK-RELCFG-UNDEFINED")
+elseif(rk_relcfg_result STREQUAL "5")
+    set(rk_relcfg_expect "RK-RELCFG-NOLOG")
+elseif(rk_relcfg_result STREQUAL "6")
+    set(rk_relcfg_expect "RK-RELCFG-NOREPORT")
+elseif(rk_relcfg_result STREQUAL "64")
+    set(rk_relcfg_expect "RK-RELCFG-USAGE")
+endif()
 
-if(rk_relcfg_line0 STREQUAL "")
-    # No token anywhere: an empty capture, or ambient interpreter output only. The
-    # synthesized line carries the exit status -- safe, and already printed in the
-    # banner above -- and nothing from the capture itself, which is precisely the
-    # content that could not be attributed. RESULT_VARIABLE can be an error STRING
-    # rather than a number, so it gets the same ';' treatment as the capture.
+# Lines that describe the run rather than decide it. None may ever head a build
+# failure: REPORT/DIGEST are paths and hashes, ENFORCED/VERDICT restate the mode
+# and the outcome without attributing it, and OK heading a FAILING build would be
+# an outright contradiction. Every other RK-RELCFG-* line is treated as governing,
+# so tokens this gate does not enumerate (a future verdict, the checker's own
+# RK-RELCFG-INTERNAL, the gate's RK-RELCFG-NOCHECKER) still get to name the failure
+# rather than being silently skipped.
+set(rk_relcfg_metadata_re "^[ \t]*RK-RELCFG-(REPORT|ENFORCED|DIGEST|VERDICT|OK)([: \t]|$)")
+
+# Pass 1: the token the exit code says is governing. Pass 2: the first governing
+# (non-metadata) token, which covers exit codes with no mapping -- NOCHECKER's
+# synthetic result=1, an unmapped future code -- without ever promoting metadata.
+# Both are anchored, so a noise line that merely MENTIONS a token cannot claim
+# line 0.
+set(rk_relcfg_line0_index -1)
+if(NOT rk_relcfg_expect STREQUAL "")
+    set(rk_relcfg_i 0)
+    foreach(rk_relcfg_line IN LISTS rk_relcfg_lines)
+        if(rk_relcfg_line MATCHES "^[ \t]*${rk_relcfg_expect}([: \t]|$)")
+            set(rk_relcfg_line0_index ${rk_relcfg_i})
+            break()
+        endif()
+        math(EXPR rk_relcfg_i "${rk_relcfg_i} + 1")
+    endforeach()
+endif()
+if(rk_relcfg_line0_index EQUAL -1)
+    set(rk_relcfg_i 0)
+    foreach(rk_relcfg_line IN LISTS rk_relcfg_lines)
+        if(rk_relcfg_line MATCHES "^[ \t]*RK-RELCFG-"
+           AND NOT rk_relcfg_line MATCHES "${rk_relcfg_metadata_re}")
+            set(rk_relcfg_line0_index ${rk_relcfg_i})
+            break()
+        endif()
+        math(EXPR rk_relcfg_i "${rk_relcfg_i} + 1")
+    endforeach()
+endif()
+
+if(rk_relcfg_line0_index EQUAL -1)
+    # No governing verdict anywhere: an empty capture, ambient interpreter output
+    # only, or metadata with no determination behind it. The synthesized line
+    # carries the exit status -- safe, and already printed in the banner above --
+    # and nothing from the capture itself, which is precisely the content that
+    # could not be attributed. RESULT_VARIABLE can be an error STRING rather than a
+    # number, so it gets the same ';' treatment as the capture.
     string(REPLACE ";" "," rk_relcfg_safe_result "${rk_relcfg_result}")
-    set(rk_relcfg_line0 "RK-RELCFG-INTERNAL: checker emitted no RK-RELCFG-* token (result=${rk_relcfg_safe_result})")
+    set(rk_relcfg_line0 "RK-RELCFG-INTERNAL: checker emitted no governing RK-RELCFG-* verdict (result=${rk_relcfg_safe_result})")
 else()
+    list(GET rk_relcfg_lines ${rk_relcfg_line0_index} rk_relcfg_line0)
     list(REMOVE_AT rk_relcfg_lines ${rk_relcfg_line0_index})
 endif()
+# Everything else -- metadata, ambient noise, the other verdicts -- is demoted
+# below line 0, never discarded, so promoting a header costs no diagnostic detail.
 set(rk_relcfg_lines "${rk_relcfg_line0}" ${rk_relcfg_lines})
 
 # STREQUAL, not EQUAL: execute_process() sets RESULT_VARIABLE to an error STRING

@@ -9,6 +9,12 @@
 # in exactly the situations where nobody is watching. They were previously covered by construction and by an uncommitted
 # scratch harness -- which is the same as not covered.
 #
+# Two of the cases run the REAL checker rather than a stub, because which line
+# HEADS a build failure is a property of the real tool's real output order, and a
+# stub that emits a verdict first cannot expose a rule that mistakes metadata for a
+# verdict. Stubs still carry the paths the real checker will not produce on demand
+# (empty output, ambient interpreter noise, ';' in a message).
+#
 # Dependency-light and portable: bash, cmake, python3. No ESP-IDF, no container,
 # no network. Every case builds its own tree under mktemp and cleans up.
 #
@@ -63,6 +69,14 @@ gate() {
         "$@" \
         -P "$HARNESS" > "$d/out.txt" 2>&1 )
     return $?
+}
+
+# arg_pos MARKER TOKEN -> 1-based position of TOKEN among the arguments actually
+# handed to fail_at_build_time, or empty if it never got there. Position 1 is the
+# required message_line0. Lets a case assert ordering -- which line HEADS the
+# failure, and that the others were demoted below it rather than dropped.
+arg_pos() {
+    sed -n 's/^ARG=//p' "$1" | grep -n -m1 -- "^$2" | cut -d: -f1
 }
 
 # check NAME TREE  EXPECT_FAIL_CALLED(yes|no)  EXPECT_IN_OUTPUT  [EXPECT_IN_LINE0]
@@ -143,6 +157,56 @@ else
     fail_count=$((fail_count + 1)); echo "FAIL OFF report did not record the unenforced failure"
 fi
 
+echo "=== gate: the GOVERNING verdict heads the failure (real checker) ==="
+# Integration, not a stub. The repository's real check_release_config.py, a real
+# violating fixture, and the real --report/--enforced the gate always passes. The
+# checker's own output order leads with metadata:
+#
+#     RK-RELCFG-REPORT: <build dir>/config/rk_release_config.json
+#     RK-RELCFG-ENFORCED: violations fail the build
+#     RK-RELCFG-VIOLATION: COMPILER_OPTIMIZATION_DEBUG
+#
+# so "first RK-RELCFG-* line wins" heads the build failure with a path. The stub
+# fixtures below could not catch that: they emit a verdict as their first token,
+# which is exactly what the real checker does not do.
+d="$(tree gov_viol opt_debug.json)"; cp "$CHECKER" "$d/tools/"
+gate "$d" ON
+check "real checker: VIOLATION heads the failure" "$d" yes \
+      "RK-RELCFG-REPORT" "RK-RELCFG-VIOLATION: COMPILER_OPTIMIZATION_DEBUG"
+ok=1
+for meta in RK-RELCFG-REPORT RK-RELCFG-ENFORCED; do
+    pos="$(arg_pos "$d/marker.txt" "$meta")"
+    if [ -z "$pos" ]; then
+        ok=0; echo "FAIL ${meta} was dropped instead of demoted"
+    elif [ "$pos" -le 1 ]; then
+        ok=0; echo "FAIL ${meta} metadata claimed line0"
+    fi
+done
+if [ "$ok" -eq 1 ]; then
+    pass_count=$((pass_count + 1)); printf 'ok   %-44s\n' "real report metadata demoted, not dropped"
+else
+    fail_count=$((fail_count + 1)); sed 's/^/    /' "$d/marker.txt"
+fi
+
+# Precedence, and the reason position cannot be the rule. A violating tree whose
+# report cannot be written exits 6, not 2: a determination that could not be
+# recorded is not a trustworthy failure report either, so NOREPORT outranks
+# VIOLATION. The real checker still prints VIOLATION *first*. Selecting by output
+# position would therefore head the failure with a verdict the checker did not
+# govern by; selecting by exit code cannot.
+d="$(tree gov_noreport opt_debug.json)"; cp "$CHECKER" "$d/tools/"
+rm -rf "$d/config/rk_release_config.json"; mkdir -p "$d/config/rk_release_config.json"
+gate "$d" ON
+check "real checker: NOREPORT outranks VIOLATION" "$d" yes "" "RK-RELCFG-NOREPORT"
+pos="$(arg_pos "$d/marker.txt" 'RK-RELCFG-VIOLATION')"
+if [ -n "$pos" ] && [ "$pos" -gt 1 ]; then
+    pass_count=$((pass_count + 1)); printf 'ok   %-44s\n' "outranked VIOLATION preserved below line0"
+else
+    fail_count=$((fail_count + 1))
+    echo "FAIL outranked VIOLATION dropped or promoted (pos=${pos:-none})"
+    sed 's/^/    /' "$d/marker.txt"
+fi
+
 echo "=== gate: defensive paths (each fails CLOSED) ==="
 d="$(tree nochecker pass.json)"            # checker deliberately not copied in
 gate "$d" ON
@@ -150,7 +214,7 @@ check "deleted checker -> NOCHECKER" "$d" yes "RK-RELCFG-NOCHECKER" "RK-RELCFG-N
 
 d="$(tree emptyout)"; printf 'import sys\nsys.exit(1)\n' > "$d/tools/check_release_config.py"
 gate "$d" ON
-check "empty checker output -> synthesized line" "$d" yes "" "RK-RELCFG-INTERNAL: checker emitted no RK-RELCFG-* token"
+check "empty checker output -> synthesized line" "$d" yes "" "RK-RELCFG-INTERNAL: checker emitted no governing RK-RELCFG-* verdict"
 
 # The two cases above/below are about ATTRIBUTION, and they are separated from the
 # empty case deliberately: the gate captures stdout AND stderr of an interpreter it
@@ -183,11 +247,37 @@ printf 'import sys\nsys.stderr.write("Error processing line 1 of /x/broken.pth:\
     > "$d/tools/check_release_config.py"
 gate "$d" ON
 check "tokenless noise -> synthesized, noise not line0" "$d" yes "" \
-      "RK-RELCFG-INTERNAL: checker emitted no RK-RELCFG-* token (result=1)"
+      "RK-RELCFG-INTERNAL: checker emitted no governing RK-RELCFG-* verdict (result=1)"
 if grep -q '^LINE0=Error processing' "$d/marker.txt"; then
     fail_count=$((fail_count + 1)); echo "FAIL interpreter noise became message_line0"
 else
     pass_count=$((pass_count + 1)); printf 'ok   %-44s\n' "interpreter noise never becomes line0"
+fi
+
+# Metadata-only, on a FAILING exit. Every line here is a real RK-RELCFG-* token, so
+# a "starts with RK-RELCFG-" rule would happily head the failure with a report path
+# -- or, worse, with RK-RELCFG-OK, announcing a pass on a build being failed. None
+# of these attributes anything, so none may lead; the synthesized line does, and
+# all four survive below it.
+d="$(tree metadata_only)"
+printf 'print("RK-RELCFG-REPORT: /x/report.json")\nprint("RK-RELCFG-ENFORCED: violations fail the build")\nprint("RK-RELCFG-OK")\nprint("RK-RELCFG-VERDICT: pass")\nimport sys\nsys.exit(1)\n' \
+    > "$d/tools/check_release_config.py"
+gate "$d" ON
+check "metadata-only output -> synthesized, none lead" "$d" yes "" \
+      "RK-RELCFG-INTERNAL: checker emitted no governing RK-RELCFG-* verdict (result=1)"
+ok=1
+for meta in RK-RELCFG-REPORT RK-RELCFG-ENFORCED RK-RELCFG-OK RK-RELCFG-VERDICT; do
+    pos="$(arg_pos "$d/marker.txt" "$meta")"
+    if [ -z "$pos" ]; then
+        ok=0; echo "FAIL ${meta} was dropped instead of demoted"
+    elif [ "$pos" -le 1 ]; then
+        ok=0; echo "FAIL ${meta} metadata claimed line0"
+    fi
+done
+if [ "$ok" -eq 1 ]; then
+    pass_count=$((pass_count + 1)); printf 'ok   %-44s\n' "metadata never leads, all of it preserved"
+else
+    fail_count=$((fail_count + 1)); sed 's/^/    /' "$d/marker.txt"
 fi
 
 d="$(tree semis)"

@@ -44,7 +44,10 @@ function(fail_at_build_time target_name message_line0)
     endif()
     file(APPEND "${MARKER}" "FAIL_CALLED target=${target_name}\n")
     file(APPEND "${MARKER}" "LINE0=${message_line0}\n")
+    # Recorded in order, so a test can assert not just WHICH line heads the failure
+    # but that the demoted ones are still present below it.
     foreach(arg "${message_line0}" ${ARGN})
+        file(APPEND "${MARKER}" "ARG=${arg}\n")
         if(arg MATCHES ";")
             file(APPEND "${MARKER}" "SEMICOLON_LEAK=${arg}\n")
             message(FATAL_ERROR "HARNESS: argument contains ';': ${arg}")
