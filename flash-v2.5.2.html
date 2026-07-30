@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Flash Roon Knob v2.5.2</title>
+  <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 42rem; margin: 4rem auto; padding: 0 1.25rem; background: #1a1a2e; color: #eee; line-height: 1.5; }
+    main { background: #16213e; border-radius: 12px; padding: 2rem; }
+    h1 { color: #e94560; margin-top: 0; }
+    button { background: #e94560; border: 0; border-radius: 8px; color: #fff; cursor: pointer; font-size: 1rem; font-weight: 600; padding: .75rem 1.25rem; }
+    .note { color: #bbb; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Roon Knob v2.5.2</h1>
+    <p>Flash this exact release to the ESP32-S3 controller from Chrome or Edge.</p>
+    <esp-web-install-button manifest="/manifest-s3-v2.5.2.json">
+      <button slot="activate">Flash ESP32-S3</button>
+      <span slot="unsupported">Web Serial requires Chrome or Edge over HTTPS.</span>
+      <span slot="not-allowed">HTTPS is required.</span>
+    </esp-web-install-button>
+    <p class="note">This page uses versioned, immutable release files. After flashing, connect to the <code>roon-knob-setup</code> Wi-Fi access point to configure Wi-Fi.</p>
+  </main>
+</body>
+</html>
