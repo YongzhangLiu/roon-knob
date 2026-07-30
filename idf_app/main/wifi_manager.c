@@ -272,6 +272,12 @@ static void retry_timer_cb(void *arg) {
 }
 
 static void schedule_retry_with_reason(uint8_t reason) {
+    // esp_wifi_stop() emits a disconnect event while AP provisioning is being
+    // entered. It must not re-enter connection/provisioning work on sys_evt.
+    if (s_ap_mode) {
+        return;
+    }
+
     s_sta_fail_count++;
 
     // Get human-readable reason and specific event type
@@ -362,6 +368,10 @@ static void start_ap_mode(void) {
 
     ESP_LOGI(TAG, "Starting AP mode for provisioning (SSID: %s)", AP_SSID);
 
+    // Mark AP mode before stopping STA: esp_wifi_stop() emits a disconnect
+    // event on sys_evt, which must not recursively enter provisioning.
+    s_ap_mode = true;
+
     // Stop STA mode
     esp_wifi_stop();
 
@@ -404,7 +414,6 @@ static void start_ap_mode(void) {
         ESP_LOGW(TAG, "AP mode: Could not set TX power: %s", esp_err_to_name(tx_err));
     }
 
-    s_ap_mode = true;
     s_sta_fail_count = 0;
 
     // Start captive portal HTTP server
