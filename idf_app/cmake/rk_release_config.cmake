@@ -37,11 +37,29 @@
 #     re-emitted on every configure so the state stays visible rather than
 #     silently inherited.
 
-if(NOT COMMAND idf_build_get_property)
-    message(FATAL_ERROR
-        "rk_release_config.cmake must be included after project(); it needs IDF's "
-        "build properties and its resolved config/sdkconfig.json.")
-endif()
+# Both ESP-IDF commands this gate depends on are checked up front. Without this,
+# a missing fail_at_build_time() surfaces only later, as CMake's unlabelled
+# "Unknown CMake command", at the exact moment the gate is trying to block a
+# violating build -- an attribution failure in the one path that must be legible.
+# A missing helper is an environment defect (IDF's utilities.cmake no longer
+# provides a documented helper), not a configuration violation, so failing loudly
+# at configure time is correct here even though the gate itself deliberately
+# defers. When both commands exist, behaviour and recovery are unchanged.
+foreach(_rk_required_command idf_build_get_property fail_at_build_time)
+    if(NOT COMMAND ${_rk_required_command})
+        message(FATAL_ERROR
+            "RK-RELCFG-NOHELPER: required ESP-IDF CMake command "
+            "'${_rk_required_command}' is not defined.\n"
+            "  * If this fired from idf_app/CMakeLists.txt, the include() of "
+            "cmake/rk_release_config.cmake must come AFTER project(): the gate "
+            "needs IDF's build properties and its resolved config/sdkconfig.json.\n"
+            "  * If the include is already after project(), this ESP-IDF version no "
+            "longer provides '${_rk_required_command}' "
+            "(tools/cmake/utilities.cmake). The release config gate cannot fail "
+            "closed without it, so it refuses to run rather than pass silently. "
+            "See docs/meta/decisions/2026-07-29_DECISION_EFFECTIVE_RELEASE_CONFIG.md")
+    endif()
+endforeach()
 
 option(RK_ENFORCE_RELEASE_CONFIG
        "Fail the build when the resolved configuration violates #202 release invariants" ON)

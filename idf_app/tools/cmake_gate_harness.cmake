@@ -32,6 +32,11 @@ function(idf_build_get_property outvar prop)
     endif()
 endfunction()
 
+# RK_TEST_OMIT_FAIL_HELPER=1 leaves fail_at_build_time UNDEFINED, so the gate's
+# required-command guard can be tested: the gate must refuse attributably rather
+# than reaching CMake's unlabelled "Unknown CMake command".
+if(NOT RK_TEST_OMIT_FAIL_HELPER)
+
 function(fail_at_build_time target_name message_line0)
     if(message_line0 STREQUAL "")
         file(APPEND "${MARKER}" "EMPTY_LINE0\n")
@@ -49,6 +54,8 @@ function(fail_at_build_time target_name message_line0)
     math(EXPR total "${extra} + 1")
     file(APPEND "${MARKER}" "ARG_COUNT=${total}\n")
 endfunction()
+
+endif()  # NOT RK_TEST_OMIT_FAIL_HELPER
 
 # Script mode has no directory scope; stub it and record what was registered.
 function(set_property)

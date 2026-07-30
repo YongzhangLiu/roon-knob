@@ -18,6 +18,14 @@ jobs:
   build-idf:
     name: build-idf
     runs-on: ubuntu-latest
+    # Initial ceiling, not a measurement. The #202 measurement run (Actions
+    # 30498910795) compiled ~1751 ninja edges per mode in roughly 3 minutes on
+    # this runner class, and this job does one such build plus an image pull, the
+    # esptool merge, and four host steps that finish in seconds. 30 leaves a wide
+    # margin for a cold registry pull while still turning a hung build into a
+    # failure inside half an hour instead of GitHub's 6-hour default. Revisit with
+    # the wall time from the first real run (see the ADR).
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -267,6 +275,13 @@ jobs:
   build-stale-config:
     name: build-stale-config
     runs-on: ubuntu-latest
+    # Also an initial ceiling. Two SEQUENTIAL container runs share one image pull:
+    # run 1 aborts at the gate within seconds (its failing target has no
+    # dependencies, so ninja stops almost immediately and compiles almost
+    # nothing), which means run 2 is effectively a full ~3-minute build rather
+    # than an incremental one. 60 is deliberately looser than build-idf's 30
+    # because two runs and a cold pull are serialised here. Revisit with the wall
+    # time from the first real run (see the ADR).
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4

@@ -51,14 +51,16 @@ tree() {
     printf '%s' "$d"
 }
 
-# gate TREE ENFORCE [PYTHON_OVERRIDE] -> runs the real gate, leaves out/marker in TREE
+# gate TREE ENFORCE [PYTHON_OVERRIDE] [EXTRA_D...] -> runs the real gate
 gate() {
     local d="$1" enforce="$2" py="${3:-$PY}"
+    shift 3 2>/dev/null || shift $#
     ( cd "$d" && "$CMAKE" \
         -DGATE="$GATE" \
         -DMARKER="$d/marker.txt" \
         -DRK_TEST_PYTHON="$py" \
         -DRK_ENFORCE_RELEASE_CONFIG="$enforce" \
+        "$@" \
         -P "$HARNESS" > "$d/out.txt" 2>&1 )
     return $?
 }
@@ -167,6 +169,28 @@ check "unwritable report -> NOREPORT" "$d" yes "RK-RELCFG-NOREPORT"
 d="$(tree nonnumeric pass.json)"; cp "$CHECKER" "$d/tools/"
 gate "$d" ON "$ROOT/definitely-not-an-interpreter"
 check "unlaunchable interpreter -> fails closed" "$d" yes ""
+
+echo "=== gate: required ESP-IDF commands are checked up front ==="
+# Without the guard, a missing fail_at_build_time() surfaces as CMake's unlabelled
+# "Unknown CMake command" at the exact moment the gate is trying to block a
+# violating build. Must be attributable instead. Configure-time failure is
+# intended here: a missing helper is an environment defect, not a config verdict.
+d="$(tree nohelper opt_debug.json)"; cp "$CHECKER" "$d/tools/"
+gate "$d" ON "$PY" -DRK_TEST_OMIT_FAIL_HELPER=1
+rc=$?
+ok=1
+[ "$rc" -eq 0 ] && { ok=0; echo "FAIL missing fail_at_build_time: gate exited 0, expected a configure failure"; }
+grep -qF 'RK-RELCFG-NOHELPER' "$d/out.txt" || { ok=0; echo "FAIL missing fail_at_build_time: no RK-RELCFG-NOHELPER token"; }
+# Match on the quoted command name only: CMake hard-wraps message() text, so any
+# longer phrase can straddle a line break.
+grep -qF "'fail_at_build_time'" "$d/out.txt" || { ok=0; echo "FAIL missing fail_at_build_time: message does not name the command"; }
+grep -qF 'Unknown CMake command' "$d/out.txt" && { ok=0; echo "FAIL missing fail_at_build_time: reached the unlabelled CMake error"; }
+if [ "$ok" -eq 1 ]; then
+    pass_count=$((pass_count + 1))
+    printf 'ok   %-44s exit=%s attributable\n' "missing fail_at_build_time" "$rc"
+else
+    fail_count=$((fail_count + 1)); echo "--- gate output ---"; sed 's/^/    /' "$d/out.txt"
+fi
 
 echo
 echo "=== ${pass_count} passed, ${fail_count} failed ==="
