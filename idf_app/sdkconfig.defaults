@@ -1,16 +1,16 @@
-# Compiler optimization - chosen by measurement, not inherited from v4 (#202)
+# Compiler optimization - static measurement plus hardware validation (#202, #203)
 # Measured on CI's own toolchain (ESP-IDF v5.4.4-1000-g8543b57cf15, GCC 14.2.0):
 #   DEBUG  bin 1761952 B  DIRAM 222931  IRAM 16383
-#   SIZE   bin 1613984 B  DIRAM 212259  IRAM 16383   <- smallest image, lowest DIRAM
-#   PERF   bin 1765520 B  DIRAM 219007  IRAM 16383
+#   SIZE   bin 1613984 B  DIRAM 212259  IRAM 16383   <- static winner; boot-looped on Dial
+#   PERF   bin 1765520 B  DIRAM 219007  IRAM 16383   <- hardware-validation candidate
 # The accepted set is owned by tools/check_release_config.py (CHOICE_INVARIANT's
 # "allowed"/"rejected"): either SIZE or PERF passes, DEBUG/NONE are rejected. Change
 # it there, not in cmake/rk_release_config.cmake, which only runs that checker and
-# names no optimization symbol. This line carries the measured choice; admitting a
-# mode outside the SIZE/PERF pair is a reviewed multi-place amendment, not a defaults
-# edit. Full table, decision rule and that edit surface:
+# names no optimization symbol. This line carries the hardware-informed choice;
+# admitting a mode outside the SIZE/PERF pair is a reviewed multi-place amendment,
+# not a defaults edit. Full table, decision rule and that edit surface:
 # docs/meta/decisions/2026-07-29_DECISION_EFFECTIVE_RELEASE_CONFIG.md
-CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
 
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"

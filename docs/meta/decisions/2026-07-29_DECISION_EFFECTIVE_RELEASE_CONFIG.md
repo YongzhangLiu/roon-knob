@@ -2,7 +2,9 @@
 
 **Date:** 2026-07-29
 **Issue:** [#202](https://github.com/muness/roon-knob/issues/202) (parent [#189](https://github.com/muness/roon-knob/issues/189), program [#201](https://github.com/muness/roon-knob/issues/201), epic [#196](https://github.com/muness/roon-knob/issues/196))
-**Status:** Accepted; implemented and enforced from this commit.
+**Status:** Accepted; implemented and enforced. Optimization candidate amended to PERF after the SIZE-built Dial preview failed sustained boot.
+
+**Hardware amendment, 2026-07-30:** PR #204's published Dial/round preview at `9ef325a12d2564848f3a944d889b57e9f99ec9c7`, built with `CONFIG_COMPILER_OPTIMIZATION_SIZE=y`, entered a boot loop on the target device. That is a release-blocking failure of #203's sustained-boot check, although the observation alone does not isolate compiler optimization as the cause. The static measurements below remain valid historical evidence, but they are insufficient to choose a shippable mode. Following the staged remedy already specified by this record, the next candidate uses `CONFIG_COMPILER_OPTIMIZATION_PERF=y`; it remains blocked pending a real flash and sustained-boot test. If PERF also boot-loops, the next diagnostic is the boot log and a DEBUG control from the same source SHA—not weakening the release gate.
 
 **Observed:** the host half, and reproducibly so — both suites are committed and both run in `release-config-fixtures`, so these are not one-off scratch runs:
 
@@ -160,7 +162,7 @@ Note also what PERF — the mode the original one-line framing would have added 
 
 The one-line PERF prescription was still the wrong prescription, and the accurate reason is simpler than the one that was written: **SIZE beats PERF on both ranked metrics** — 151 536 B smaller and 6 748 B lower on static DIRAM — so adopting PERF would have shipped the worse of the two optimized modes. It would not have shipped something worse than DEBUG in every respect. That is a concrete example of why the measurement was made a precondition, and correcting it here is also an example of why a claim adjacent to its own table still has to be checked against it.
 
-`sdkconfig.defaults` therefore carries `CONFIG_COMPILER_OPTIMIZATION_SIZE=y`.
+The static-only decision therefore initially put `CONFIG_COMPILER_OPTIMIZATION_SIZE=y` in `sdkconfig.defaults`. The 2026-07-30 hardware amendment above supersedes that runtime choice: `sdkconfig.defaults` now carries `CONFIG_COMPILER_OPTIMIZATION_PERF=y`, pending the same hardware checks. The recorded SIZE builds and their exact-SHA evidence remain historical observations and are not rewritten as PERF results.
 
 ### The limit of this measurement — read this before quoting "chosen by measurement"
 
