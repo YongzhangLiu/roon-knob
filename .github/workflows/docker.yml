@@ -214,10 +214,18 @@ jobs:
           done
           [ "$missing" -eq 0 ] || { echo "refusing to upload an incomplete artifact"; exit 1; }
 
-      # rk_release_config.json rides along with the firmware so the config that was
-      # gated is recoverable from the artifact months later, alongside the binary it
-      # describes (#202). if-no-files-found: error is kept as defence in depth for
-      # the zero-match case only; the step above is what guarantees each file.
+      # rk_release_config.json rides along with the firmware (#202). Note what it
+      # does and does not preserve: the verdict, the enforced state, the sha256 of
+      # the config that was gated, and one evidence row per invariant -- NOT the
+      # full gated configuration, which cannot be reconstructed from it. The
+      # resolved sdkconfig.json is deliberately NOT uploaded: artifacts on a public
+      # repo are world-downloadable, and that file is exactly where a future
+      # sdkconfig.local-style credential would surface, which would undo the
+      # checker's own no-echo discipline. The binding between report and binary is
+      # same-job provenance plus the per-file assertion above, and the release job
+      # re-asserts the report itself.
+      # if-no-files-found: error is kept as defence in depth for the zero-match
+      # case only; the step above is what guarantees each file.
       - name: Upload ESP32-S3 artifact
         uses: actions/upload-artifact@v4
         with:
@@ -229,17 +237,26 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  # Proves the checker's LOGIC and the host assertion's teeth. Host-only, no
-  # ESP-IDF, no container, seconds. Deliberately independent of build-idf so a
-  # failure here is attributable to the gate rather than to the firmware build.
+  # Proves the checker's LOGIC, the host assertion's teeth, and the CMake gate's
+  # decision paths. Host-only -- bash, python3, cmake -- no ESP-IDF, no container,
+  # seconds. Deliberately independent of build-idf so a failure here is
+  # attributable to the gate rather than to the firmware build.
   release-config-fixtures:
     name: release-config-fixtures
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run release-config fixtures (#202)
+      - name: Run checker and host-assertion fixtures (#202)
         run: idf_app/tools/test_check_release_config.sh
+
+      # rk_release_config.cmake is the file that decides whether a violating build
+      # actually fails. Its defensive paths (deleted checker, empty output,
+      # ';'-splitting, unwritable report, unlaunchable interpreter) are reachable
+      # precisely when nobody is watching, so they are tested rather than reasoned
+      # about. Runs the real gate under `cmake -P` with IDF's two commands stubbed.
+      - name: Run CMake gate fixtures (#202)
+        run: idf_app/tools/test_release_config_cmake.sh
 
   # The one integration negative (#202 AC 6). Proves the WIRING: that a stale
   # sdkconfig which silently ignores the committed defaults is caught at configure
@@ -268,15 +285,26 @@ jobs:
       # Seeded BEFORE any configure. `idf.py set-target` must never be used here:
       # it renames an existing sdkconfig to sdkconfig.old, which would silently
       # destroy the very condition under test. The action only exports IDF_TARGET.
+      # MODE-AGNOSTIC on purpose. The gate accepts SIZE or PERF so that a
+      # hardware-driven switch in #203 is a one-line sdkconfig.defaults diff; if
+      # this seed matched the literal SIZE line, that switch would also require a
+      # workflow edit -- and because this job gates tagging, forgetting it would
+      # block a release. Matching whichever release mode is selected keeps the
+      # one-line claim true, while `swapped == 1` keeps the tripwire: two selected
+      # modes, or none, still stops the job.
       - name: Seed a faithful stale tree, differing only in the optimization choice
         run: |
           set -euo pipefail
           python3 - <<'PY'
+          import re
           src, dst = "idf_app/sdkconfig.defaults", "idf_app/sdkconfig"
-          out, swapped = [], 0
+          selected = re.compile(r"^CONFIG_COMPILER_OPTIMIZATION_(SIZE|PERF)=y$")
+          out, swapped, was = [], 0, None
           with open(src, encoding="utf-8") as fh:
               for line in fh:
-                  if line.strip() == "CONFIG_COMPILER_OPTIMIZATION_SIZE=y":
+                  m = selected.match(line.strip())
+                  if m:
+                      was = m.group(1)
                       out += ["CONFIG_COMPILER_OPTIMIZATION_DEBUG=y\n",
                               "# CONFIG_COMPILER_OPTIMIZATION_SIZE is not set\n",
                               "# CONFIG_COMPILER_OPTIMIZATION_PERF is not set\n",
@@ -284,10 +312,12 @@ jobs:
                       swapped += 1
                   else:
                       out.append(line)
-          assert swapped == 1, "expected exactly one optimization line, found %d" % swapped
+          assert swapped == 1, \
+              "expected exactly one selected release mode (SIZE or PERF) in %s, found %d" \
+              % (src, swapped)
           with open(dst, "w", encoding="utf-8") as fh:
               fh.writelines(out)
-          print("seeded %s from %s" % (dst, src))
+          print("seeded %s from %s, regressing %s -> DEBUG" % (dst, src, was))
           PY
           echo "--- optimization selection in the seeded tree ---"
           grep -n 'COMPILER_OPTIMIZATION' idf_app/sdkconfig
@@ -295,6 +325,39 @@ jobs:
           diff <(grep -v 'COMPILER_OPTIMIZATION' idf_app/sdkconfig.defaults) \
                <(grep -v 'COMPILER_OPTIMIZATION' idf_app/sdkconfig)
           echo "seed differs from committed defaults only in the optimization choice"
+
+      # LIVENESS CANARY for the one determination this gate delegates rather than
+      # computes. The undefined-symbol verdict is kconfgen's, read out of the build
+      # log by regex -- so a future esp-idf-kconfig (the constraint allows anything
+      # <3.0.0) could reword that diagnostic and the checker would silently return
+      # "nothing found" forever. That would also disarm the brownout-alias drift
+      # alarm the ADR promises. A recorded fixture cannot detect it; only the live
+      # toolchain can.
+      #
+      # Ordering is load-bearing and must not be rearranged:
+      #   * AFTER the seed/diff step, so the byte-identity assertion is unaffected
+      #   * BEFORE run 1, so the #149 staleness guard sees the same defaults hash
+      #     on both runs (appending between the runs would trip its FATAL_ERROR in
+      #     run 2 and break the control for the wrong reason)
+      #   * appended to sdkconfig.defaults, never to sdkconfig: an unknown symbol
+      #     never reaches sdkconfig.json, so both runs still resolve an identical
+      #     effective config and the digest-equality control is preserved
+      # The value is a sentinel so the no-echo discipline can be proven against
+      # real kconfgen output, not just against a fixture. Test-only: this line is
+      # appended to the CI checkout and is never committed.
+      - name: Arm the kconfgen undefined-symbol liveness canary (test-only)
+        run: |
+          set -euo pipefail
+          grep -q 'RK_CANARY_UNDEFINED_SYMBOL' idf_app/sdkconfig.defaults \
+            && { echo "canary must never be committed to sdkconfig.defaults"; exit 1; } || true
+          printf '%s\n' \
+            '' \
+            '# TEST-ONLY canary appended by CI (build-stale-config), never committed.' \
+            'CONFIG_RK_CANARY_UNDEFINED_SYMBOL="rk-canary-value-must-not-be-echoed"' \
+            >> idf_app/sdkconfig.defaults
+          tail -3 idf_app/sdkconfig.defaults
+          echo "--- sdkconfig (the seeded tree) must NOT carry the canary ---"
+          ! grep -q 'RK_CANARY_UNDEFINED_SYMBOL' idf_app/sdkconfig
 
       # Run 1: enforcement ON. Must fail, and must fail AT THE GATE.
       - name: Run 1 of 2 - enforcement ON (expected to FAIL)
@@ -338,6 +401,35 @@ jobs:
             --config "$RUNNER_TEMP/stale/sdkconfig-on.json" \
             --expect-enforced true \
             --expect-verdict fail
+
+      # The canary, read back out of the log the live toolchain actually wrote.
+      # Exit 4 is required exactly: UNDEFINED outranks the VIOLATION this tree also
+      # has, so a 2 here would mean kconfgen's wording changed and the delegated
+      # determination has gone silent.
+      - name: Assert kconfgen's undefined-symbol determination is still live
+        run: |
+          set -euo pipefail
+          set +e
+          out=$(python3 idf_app/tools/check_release_config.py \
+                  --config "$RUNNER_TEMP/stale/sdkconfig-on.json" \
+                  --log idf_app/rk-stale-on.log \
+                  --log-must-contain 'RK-RELCFG-VERDICT:' 2>&1)
+          rc=$?
+          set -e
+          printf '%s\n' "$out"
+          if [ "$rc" -ne 4 ]; then
+            echo "FAIL: expected exit 4 (RK-RELCFG-UNDEFINED) from the live canary, got $rc."
+            echo "      kconfgen's unknown-symbol wording may have changed, which would"
+            echo "      silently disable the delegated undefined-symbol determination."
+            exit 1
+          fi
+          printf '%s' "$out" | grep -F 'RK-RELCFG-UNDEFINED: CONFIG_RK_CANARY_UNDEFINED_SYMBOL'
+          echo "--- and the assigned value must never be echoed ---"
+          if printf '%s' "$out" | grep -qF 'rk-canary-value-must-not-be-echoed'; then
+            echo "FAIL: the checker echoed an assigned value from the log"
+            exit 1
+          fi
+          echo "live kconfgen verdict consumed; symbol named, value withheld"
 
       # Run 2: the POSITIVE CONTROL. Identical tree, identical violating config,
       # enforcement OFF -- and it must build all the way through. No

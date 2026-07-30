@@ -321,6 +321,18 @@ expect "stale-config report is verdict:fail" 0 "RK-RELCFG-ASSERT-OK" \
     -- "$PY" "$ASSERTER" --report "$TMP/stale.json" --config "$FIX/opt_debug.json" \
        --expect-verdict fail --expect-enforced true
 
+echo "=== repo tripwire: the CI-only canary must never be committed ==="
+# build-stale-config appends CONFIG_RK_CANARY_UNDEFINED_SYMBOL to its checkout's
+# sdkconfig.defaults to prove kconfgen's undefined-symbol verdict is still live.
+# If that line ever reaches a commit, every real build gains a bogus symbol.
+expect "canary absent from committed defaults" 0 "canary-not-committed" -- "$PY" -c "
+import sys
+text = open('sdkconfig.defaults', encoding='utf-8').read()
+assert 'RK_CANARY_UNDEFINED_SYMBOL' not in text, \
+    'CI-only canary was committed to sdkconfig.defaults'
+print('canary-not-committed')
+"
+
 echo
 echo "=== ${pass_count} passed, ${fail_count} failed ==="
 [ "$fail_count" -eq 0 ] || exit 1

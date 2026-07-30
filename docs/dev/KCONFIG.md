@@ -199,7 +199,9 @@ The gate is `idf_app/cmake/rk_release_config.cmake`, the checker is `idf_app/too
 
 ### What it enforces
 
-Release builds must be optimized (exactly one of `CONFIG_COMPILER_OPTIMIZATION_SIZE` / `_PERF`, never `_DEBUG` / `_NONE`), must keep PSRAM and the custom partition table, must keep assertions enabled, and must not enable debug-only facilities (gdbstub panic handler, debug stubs, heap poisoning/tracing, FreeRTOS trace). The committed default is **SIZE**, chosen by measurement.
+Release builds must be optimized (exactly one of `CONFIG_COMPILER_OPTIMIZATION_SIZE` / `_PERF`, never `_DEBUG` / `_NONE`), must keep PSRAM and the custom partition table, must keep assertions enabled, and must not enable debug-only facilities (gdbstub panic handler, debug stubs, heap poisoning/tracing, FreeRTOS trace).
+
+The committed default is currently **SIZE**, chosen by measurement. The gate accepts either optimized mode on purpose: switching to `CONFIG_COMPILER_OPTIMIZATION_PERF=y` is a one-line change to `sdkconfig.defaults` and needs no change to the gate, its fixtures, the CI workflow, or the decision record.
 
 ### Reading the output
 
