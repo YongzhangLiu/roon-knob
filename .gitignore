@@ -11,11 +11,7 @@ idf_app/dependencies.lock
 
 # Node modules
 
-# Beads db
-.beads/
 idf_app/managed_components/*
 idf_app/sdkconfig.override
-.agneto/
 .claude/
-.superego/
-.wm/
+.oh/.cache/
