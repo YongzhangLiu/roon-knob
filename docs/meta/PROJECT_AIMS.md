@@ -10,7 +10,7 @@ Roon Knob turns a $50 commodity device into a purpose-built physical controller 
 
 It's also a **learning platform** for:
 - AI coding agents (Claude Code workflows)
-- Metacognitive agent review (superego)
+- Phase-specific Open Horizons skills and review/dissent workflows
 - Embedded systems development (ESP-IDF, LVGL, FreeRTOS)
 - UI/UX design on constrained devices
 - Roon extension development

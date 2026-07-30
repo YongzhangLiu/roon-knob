@@ -80,12 +80,14 @@ git commit -m "Description of change"
 
 # 3. Push the branch and create a PR
 git push -u origin fix/short-description
-sg review pr          # for significant changes
-gh pr create --fill   # or with custom title/body
+gh pr create --draft --fill   # or with custom title/body
 
 # 4. Wait for CI to pass, then merge
 gh pr merge --squash --delete-branch
 ```
+
+For significant changes, follow the `/solution-space → /execute → /ship`
+workflow and the `/review` + `/dissent` gates in `AGENTS.md`.
 
 ### Branch Naming
 
@@ -143,7 +145,9 @@ idf.py build
 See [docs/dev/KCONFIG.md](docs/dev/KCONFIG.md) for details.
 
 ### ESP-IDF Version
-This project uses ESP-IDF v5.4.3. The local install is symlinked at `~/esp/esp-idf`.
+CI currently uses ESP-IDF `v5.4.3`, matching the last working release. Use that
+exact version locally when
+reproducing CI or hardware behavior; version changes are explicit migration work.
 
 ### Target Chip
 The target is ESP32-S3, not ESP32. If you get weird errors, check:

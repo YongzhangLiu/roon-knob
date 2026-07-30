@@ -19,7 +19,9 @@ jobs:
     name: build-idf
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Get version from tag or CMakeLists
         id: version
@@ -37,19 +39,40 @@ jobs:
           sed -i 's/set(PROJECT_VER ".*")/set(PROJECT_VER "${{ steps.version.outputs.version }}")/' idf_app/CMakeLists.txt
           grep PROJECT_VER idf_app/CMakeLists.txt
 
+      # Do not cache build/: it contains generated sdkconfig, CMake state, and
+      # firmware that must be regenerated for the checked-out SHA. The IDF image
+      # enables ccache; restoring it by prefix lets source
+      # changes reuse prior object compilation while a distinct SHA key saves the
+      # updated cache after each successful build.
+      - name: Restore ESP-IDF compiler cache
+        uses: actions/cache@v5
+        with:
+          path: .ci/ccache
+          key: ${{ runner.os }}-esp-idf-v5.5.5-ccache-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-esp-idf-v5.5.5-ccache-
+
       - name: Build with ESP-IDF
         uses: espressif/esp-idf-ci-action@v1
         with:
-          esp_idf_version: release-v5.4
+          esp_idf_version: v5.5.5
           target: esp32s3
           path: idf_app
+          extra_docker_args: >-
+            -e CCACHE_DIR=/app/${{ github.repository }}/.ci/ccache
+          command: >-
+            set -e;
+            idf.py build;
+            grep -Fx 'CONFIG_COMPILER_OPTIMIZATION_PERF=y' sdkconfig;
+            ! grep -Fx 'CONFIG_COMPILER_OPTIMIZATION_DEBUG=y' sdkconfig;
+            grep -Fx 'CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096' sdkconfig
 
       - name: Create merged flash image for web flashing
         run: |
           pip install esptool
           esptool --chip esp32s3 merge-bin \
             -o roon_knob_merged.bin \
-            --flash-mode dio --flash-freq 80m --flash-size 8MB \
+            --flash-mode dio --flash-freq 80m --flash-size 16MB \
             0x0 idf_app/build/bootloader/bootloader.bin \
             0x8000 idf_app/build/partition_table/partition-table.bin \
             0xd000 idf_app/build/ota_data_initial.bin \
@@ -57,7 +80,7 @@ jobs:
           ls -la *.bin
 
       - name: Upload ESP32-S3 artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: esp32s3-firmware
           path: |
@@ -71,10 +94,12 @@ jobs:
     needs: [build-idf]
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Download ESP32-S3 firmware
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: esp32s3-firmware
           path: esp32s3-artifacts
@@ -149,7 +174,7 @@ jobs:
 
       - name: Create or Update Release
         if: steps.check_release.outputs.existing_assets == '0'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           draft: false
           prerelease: ${{ contains(github.ref, '-') }}
@@ -187,10 +212,12 @@ jobs:
       contents: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Download ESP32-S3 firmware
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: esp32s3-firmware
           path: esp32s3-artifacts
@@ -198,14 +225,17 @@ jobs:
       - name: Prepare PR preview content
         env:
           PR_NUM: ${{ github.event.pull_request.number }}
+          BUILD_SHA: ${{ github.sha }}
         run: |
           mkdir -p pr-preview
+          MANIFEST_FILE="manifest-s3-${BUILD_SHA}.json"
+          FLASH_PAGE="flash-${BUILD_SHA}.html"
 
           # Copy firmware
           cp esp32s3-artifacts/roon_knob_merged.bin pr-preview/
 
-          # Create PR-specific manifest
-          cat > pr-preview/manifest-s3.json << EOF
+          # Immutable preview paths avoid stale GitHub Pages CDN entries.
+          cat > "pr-preview/${MANIFEST_FILE}" << EOF
           {
             "name": "Roon Knob (PR #${PR_NUM} Preview)",
             "version": "pr-${PR_NUM}",
@@ -213,15 +243,18 @@ jobs:
             "builds": [{
               "chipFamily": "ESP32-S3",
               "parts": [{
-                "path": "roon_knob_merged.bin",
+                "path": "roon_knob_merged.bin?sha=${BUILD_SHA}",
                 "offset": 0
               }]
             }]
           }
           EOF
 
-          # Create PR flash page from template
-          sed "s/{{PR_NUMBER}}/${PR_NUM}/g" web/flash-pr.html > pr-preview/flash.html
+          # Create a page that points at the manifest for this exact build.
+          sed \
+            -e "s/{{PR_NUMBER}}/${PR_NUM}/g" \
+            -e "s|manifest-s3.json|${MANIFEST_FILE}|g" \
+            web/flash-pr.html > "pr-preview/${FLASH_PAGE}"
 
           echo "PR preview contents:"
           ls -la pr-preview/
@@ -235,11 +268,13 @@ jobs:
           keep_files: true
 
       - name: Post preview URL to PR
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
+        env:
+          BUILD_SHA: ${{ github.sha }}
         with:
           script: |
             const prNumber = context.payload.pull_request.number;
-            const previewUrl = `https://roon-knob.muness.com/pr/${prNumber}/flash.html`;
+            const previewUrl = `https://roon-knob.muness.com/pr/${prNumber}/flash-${process.env.BUILD_SHA}.html`;
 
             // Check if we already posted a comment
             const comments = await github.rest.issues.listComments({
@@ -283,10 +318,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Download ESP32-S3 firmware
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: esp32s3-firmware
           path: esp32s3-artifacts

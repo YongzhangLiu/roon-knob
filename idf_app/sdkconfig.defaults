@@ -9,6 +9,13 @@ CONFIG_PARTITION_TABLE_MD5=y
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
 
+# v4's non-debug release profile (-O2).
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# Wi-Fi provisioning starts the captive portal from ESP-IDF's default event-loop
+# task (sys_evt). Its 2304-byte default overflows under the PERF build.
+CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
+
 # PSRAM Configuration (required for artwork RGB565 buffers)
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
