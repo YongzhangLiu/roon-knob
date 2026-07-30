@@ -216,6 +216,9 @@ Every verdict is a stable `RK-RELCFG-*` token, so a failure always says *why*:
 | `RK-RELCFG-NOLOG` | 5 | a log was requested but is absent/empty/not the gate's own |
 | `RK-RELCFG-NOREPORT` | 6 | the JSON report could not be written |
 | `RK-RELCFG-USAGE` | 64 | bad invocation (including a flag given an empty value) |
+| `RK-RELCFG-NOHELPER` | — | a required ESP-IDF CMake command is missing (see below) |
+
+`RK-RELCFG-NOHELPER` is the one token with **no checker exit code**, because the checker never runs: it comes from the CMake gate itself as a configure-time `FATAL_ERROR` when `idf_build_get_property` or `fail_at_build_time` is not defined. That means either the gate was included before `project()`, or this ESP-IDF version no longer provides the helper — and without `fail_at_build_time` the gate cannot fail closed, so it refuses to run rather than pass silently. Unlike a violation, this one does stop `menuconfig`, because it is an environment defect rather than a configuration verdict. The message names the missing command.
 
 The gate also writes `build/config/rk_release_config.json` on every configure, enforced or not, and CI uploads it with the firmware.
 
