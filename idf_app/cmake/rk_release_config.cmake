@@ -21,14 +21,21 @@
 #
 # Enforcement ceilings, stated here as well as in the ADR because the comment is
 # what the next maintainer reads:
-#   * fail_at_build_time() creates an ALL target, so the gate fires for
-#     `idf.py build` but not for target-selected invocations such as `idf.py app`.
-#     Local coverage is therefore ergonomic, not absolute.
+#   * fail_at_build_time() creates an ALL target, so the gate fires for anything
+#     that builds `all` -- which includes `idf.py build` AND `idf.py flash`
+#     (its action carries dependencies/order_dependencies on `all`). The bypass
+#     is narrower than "target-selected invocations": specifically `idf.py app`
+#     and `idf.py app-flash`, which build the app target directly. Local coverage
+#     is therefore broad but not absolute.
 #   * Real non-optionality lives in CI: the workflow forces enforcement ON and
 #     then asserts this report on the host (tools/assert_release_report.py).
 #     Deleting that host step is not detectable from inside the repo; closing
 #     that hole needs branch protection with required checks, which #202 does
 #     not touch.
+#   * RK_ENFORCE_RELEASE_CONFIG is a CMake CACHE variable: once set to OFF in a
+#     build tree it persists for every later build in that tree. The banner is
+#     re-emitted on every configure so the state stays visible rather than
+#     silently inherited.
 
 if(NOT COMMAND idf_build_get_property)
     message(FATAL_ERROR

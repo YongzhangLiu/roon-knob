@@ -67,13 +67,33 @@ jobs:
             --expect-enforced true \
             --expect-verdict pass
 
-      # Assignments to undefined kconfig symbols are kconfgen's verdict, not
-      # ours; the checker only consumes its exact warning from the build log.
+      # Assignments to undefined kconfig symbols are kconfgen's verdict, not ours;
+      # the checker only consumes its exact warning from the build log.
+      #
+      # Requesting a log makes its existence, non-emptiness AND identity part of
+      # the contract. `--log-must-contain RK-RELCFG-VERDICT:` is what proves the
+      # log read here is the one the gate itself wrote: if a future refactor
+      # renames, moves or drops the `tee`, this step fails with exit 5 /
+      # RK-RELCFG-NOLOG instead of passing vacuously on an absent log.
       - name: Assert no assignments to undefined kconfig symbols (#202)
         run: |
           python3 idf_app/tools/check_release_config.py \
             --config idf_app/build/config/sdkconfig.json \
-            --log idf_app/rk-build.log
+            --log idf_app/rk-build.log \
+            --log-must-contain 'RK-RELCFG-VERDICT:' \
+            --enforced yes \
+            --report idf_app/build/config/rk_log_scan_report.json
+
+      # ...and this proves the *report* records the log as read, so "no findings"
+      # can never again be indistinguishable from "nothing was looked at".
+      - name: Assert the undefined-symbol scan actually read the build log (#202)
+        run: |
+          python3 idf_app/tools/assert_release_report.py \
+            --report idf_app/build/config/rk_log_scan_report.json \
+            --config idf_app/build/config/sdkconfig.json \
+            --expect-enforced true \
+            --expect-verdict pass \
+            --require-logs-read
 
       - name: Create merged flash image for web flashing
         run: |
@@ -165,7 +185,15 @@ jobs:
   release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: [build-idf]
+    # The negative-proof jobs must REQUIRE, not merely produce, evidence (#202):
+    # publishing firmware while the jobs that prove the gate works are red would
+    # make "CI's enforcement is provable" true of the build and false of the
+    # release. Neither dependency carries an `if:` event guard, deliberately -- a
+    # skipped dependency skips this job too, so an event-guarded prerequisite
+    # would silently un-gate tag builds. Both therefore run on every event, which
+    # costs one extra container build per push; that is the price of a graph whose
+    # semantics do not depend on reading GitHub's skip rules correctly.
+    needs: [build-idf, release-config-fixtures, build-stale-config]
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - uses: actions/checkout@v4
@@ -278,7 +306,11 @@ jobs:
   deploy-pr-preview:
     name: Deploy PR Preview
     runs-on: ubuntu-latest
-    needs: [build-idf]
+    # Gated by the fast host-only fixture job as well: a preview flashed to real
+    # hardware should not come from a tree whose checker logic is broken. The
+    # container-heavy build-stale-config is deliberately NOT a dependency here --
+    # it gates releases, and adding it would delay every preview by a full build.
+    needs: [build-idf, release-config-fixtures]
     if: github.event_name == 'pull_request'
     permissions:
       contents: write

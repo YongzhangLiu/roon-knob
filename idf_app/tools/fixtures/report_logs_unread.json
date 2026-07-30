@@ -1,0 +1,27 @@
+{
+  "_comment": "Fixture for the log fail-open regression. A report whose requested log was never read. tools/assert_release_report.py --require-logs-read MUST reject this; if it ever accepts it, the kconfgen-delegated undefined-symbol gate is unenforced.",
+  "config_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "config_path": "/app/muness/roon-knob/idf_app/build/config/sdkconfig.json",
+  "defaults": [],
+  "enforced": true,
+  "exit_code": 0,
+  "invariants": [],
+  "issue": 202,
+  "log_problems": [],
+  "logs_required_markers": [],
+  "logs_requested": 1,
+  "logs_scanned": [
+    {
+      "bytes": 0,
+      "error": "FileNotFoundError",
+      "path": "/app/muness/roon-knob/idf_app/rk-build.log",
+      "read": false
+    }
+  ],
+  "schema": "rk-release-config/1",
+  "tokens": [
+    "RK-RELCFG-OK"
+  ],
+  "undefined_symbols": [],
+  "verdict": "pass"
+}

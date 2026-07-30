@@ -109,6 +109,39 @@ refute "assigned value never echoed"     "fixture-value-must-never-be-echoed" \
 expect "rename aliases are not flagged" 0 "RK-RELCFG-OK" \
     -- "$PY" "$CHECKER" --config "$FIX/pass.json" --log "$FIX/kconfgen_rename.log"
 
+echo "=== checker: a REQUESTED log that cannot be read is a failure, not silence ==="
+# Regression: this exact invocation used to exit 0 with RK-RELCFG-OK, which made the
+# kconfgen-delegated undefined-symbol gate fail OPEN whenever the log went missing.
+expect "missing requested log -> NOLOG"  5 "RK-RELCFG-NOLOG: requested log could not be read" \
+    -- "$PY" "$CHECKER" --config "$FIX/pass.json" --log "$TMP/never_written.log"
+expect "empty requested log -> NOLOG"    5 "RK-RELCFG-NOLOG: requested log is empty" \
+    -- "$PY" "$CHECKER" --config "$FIX/pass.json" --log "$FIX/empty.log"
+expect "whitespace-only log -> NOLOG"    5 "RK-RELCFG-NOLOG: requested log is empty" \
+    -- "$PY" "$CHECKER" --config "$FIX/pass.json" --log "$FIX/whitespace_only.log"
+expect "required marker absent -> NOLOG"  5 "RK-RELCFG-NOLOG: no requested log contains the required marker" \
+    -- "$PY" "$CHECKER" --config "$FIX/pass.json" --log "$FIX/kconfgen_rename.log" \
+       --log-must-contain "RK-RELCFG-VERDICT:"
+expect "required marker present -> OK"   0 "RK-RELCFG-OK" \
+    -- "$PY" "$CHECKER" --config "$FIX/pass.json" --log "$FIX/kconfgen_rename.log" \
+       --log-must-contain "Configuring done"
+# The configure-time CMake gate passes no --log at all: not requested, must not fail.
+expect "no --log requested -> not a failure" 0 "RK-RELCFG-OK" \
+    -- "$PY" "$CHECKER" --config "$FIX/pass.json"
+refute "NOLOG path never echoes values"  "fixture-value-must-never-be-echoed" \
+    -- "$PY" "$CHECKER" --config "$FIX/pass.json" --log "$FIX/kconfgen_undefined.log" \
+       --log-must-contain "RK-RELCFG-VERDICT:"
+
+echo "=== checker: token precedence NOCONFIG > NOLOG > UNDEFINED > VIOLATION ==="
+expect "NOCONFIG outranks NOLOG"    3 "RK-RELCFG-NOCONFIG" \
+    -- "$PY" "$CHECKER" --config "$FIX/malformed.json" --log "$TMP/never_written.log"
+expect "NOLOG outranks UNDEFINED"   5 "RK-RELCFG-NOLOG" \
+    -- "$PY" "$CHECKER" --config "$FIX/pass.json" --log "$FIX/kconfgen_undefined.log" \
+       --log "$TMP/never_written.log"
+expect "UNDEFINED outranks VIOLATION" 4 "RK-RELCFG-UNDEFINED: CONFIG_WIFI_SSID" \
+    -- "$PY" "$CHECKER" --config "$FIX/opt_debug.json" --log "$FIX/kconfgen_undefined.log"
+expect "outranked tokens stay visible"  4 "RK-RELCFG-VIOLATION: COMPILER_OPTIMIZATION_DEBUG" \
+    -- "$PY" "$CHECKER" --config "$FIX/opt_debug.json" --log "$FIX/kconfgen_undefined.log"
+
 echo "=== checker: report and banner ==="
 expect "report written, enforced=yes"  0 "RK-RELCFG-ENFORCED" \
     -- "$PY" "$CHECKER" --config "$FIX/pass.json" --enforced yes --report "$TMP/enforced.json"
@@ -148,6 +181,21 @@ assert all('actual' in row and 'status' in row for row in r['invariants'])
 print('rows-complete')
 "
 
+echo "=== checker: the report proves which logs were read ==="
+"$PY" "$CHECKER" --config "$FIX/pass.json" --log "$FIX/kconfgen_rename.log" \
+    --log-must-contain "Configuring done" --enforced yes --report "$TMP/withlog.json" >/dev/null 2>&1
+expect "report records log evidence" 0 "log-evidence-ok" -- "$PY" -c "
+import json
+r=json.load(open('$TMP/withlog.json'))
+assert r['logs_requested']==1, r['logs_requested']
+e=r['logs_scanned'][0]
+assert e['read'] is True and e['bytes']>0, e
+assert 'Configuring done' in e['markers_found'], e
+assert r['log_problems']==[], r['log_problems']
+assert r['logs_required_markers']==['Configuring done'], r['logs_required_markers']
+print('log-evidence-ok')
+"
+
 echo "=== assert-the-assertion: the host gate must have teeth ==="
 expect "good report accepted"          0 "RK-RELCFG-ASSERT-OK" \
     -- "$PY" "$ASSERTER" --report "$TMP/enforced.json" --config "$FIX/pass.json"
@@ -159,6 +207,12 @@ expect "missing report REJECTED"       1 "RK-RELCFG-ASSERT-FAIL" \
     -- "$PY" "$ASSERTER" --report "$TMP/no_such_report.json"
 expect "failing verdict REJECTED"      1 "RK-RELCFG-ASSERT-FAIL" \
     -- "$PY" "$ASSERTER" --report "$TMP/off_fail.json"
+expect "logs-read proof accepted"      0 "RK-RELCFG-ASSERT-OK" \
+    -- "$PY" "$ASSERTER" --report "$TMP/withlog.json" --config "$FIX/pass.json" --require-logs-read
+expect "unread log REJECTED"           1 "report says log was not read" \
+    -- "$PY" "$ASSERTER" --report "$FIX/report_logs_unread.json" --require-logs-read
+expect "no log scanned REJECTED"       1 "report proves no log was read" \
+    -- "$PY" "$ASSERTER" --report "$TMP/enforced.json" --config "$FIX/pass.json" --require-logs-read
 
 # The stale-config integration negative asserts its report this way.
 "$PY" "$CHECKER" --config "$FIX/opt_debug.json" --enforced yes --report "$TMP/stale.json" >/dev/null 2>&1

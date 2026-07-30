@@ -46,8 +46,27 @@ Code  Token                       Meaning
 3     ``RK-RELCFG-NOCONFIG``      config missing / unreadable / malformed
 4     ``RK-RELCFG-UNDEFINED``     symbol family absent, or kconfgen reported an
                                   assignment to an unknown symbol
+5     ``RK-RELCFG-NOLOG``         a log was *requested* via ``--log`` but is
+                                  absent, unreadable, empty, or missing a marker
+                                  required by ``--log-must-contain``
 64    ``RK-RELCFG-USAGE``         bad invocation (distinct from every verdict)
 ===== =========================== =============================================
+
+**Precedence, when more than one condition holds:** ``NOCONFIG`` > ``NOLOG`` >
+``UNDEFINED`` > ``VIOLATION``. The first three mean the checker could not make a
+trustworthy determination and must not be reported as a mere policy violation.
+Every applicable token is still printed and recorded in the report, so nothing is
+hidden by the precedence; only the *exit code* is single-valued. In particular a
+config that is both undefined and violating exits 4 while the violation rows
+remain visible in the report's ``invariants``.
+
+**A requested log that cannot be read is a failure, not silence.** ``--log`` is
+how the kconfgen-delegated undefined-symbol determination reaches this checker,
+so treating an absent, unreadable or empty log as "nothing found" would make that
+determination fail *open* — the exact asymmetry this design rejects everywhere
+else ("absent != satisfied"). Passing no ``--log`` at all is different and
+legitimate: the determination is then simply not requested, which is the case for
+the configure-time CMake gate, and it never fails on that basis.
 
 ``--enforced`` never changes the exit code. It is recorded in the report and the
 banner only; suppressing *failure* is the caller's decision (CMake's
@@ -75,12 +94,14 @@ EXIT_OK = 0
 EXIT_VIOLATION = 2
 EXIT_NOCONFIG = 3
 EXIT_UNDEFINED = 4
+EXIT_NOLOG = 5
 EXIT_USAGE = 64
 
 TOKEN_OK = "RK-RELCFG-OK"
 TOKEN_VIOLATION = "RK-RELCFG-VIOLATION"
 TOKEN_NOCONFIG = "RK-RELCFG-NOCONFIG"
 TOKEN_UNDEFINED = "RK-RELCFG-UNDEFINED"
+TOKEN_NOLOG = "RK-RELCFG-NOLOG"
 TOKEN_USAGE = "RK-RELCFG-USAGE"
 
 # kconfgen's own wording, from esp-idf-kconfig's defaults-loading path. Verified
@@ -209,23 +230,63 @@ def evaluate(cfg: dict) -> tuple[list[dict], list[str], list[str]]:
     return rows, violations, undefined
 
 
-def scan_logs(paths: list[str]) -> tuple[list[str], list[dict]]:
-    """Collect kconfgen-reported unknown symbols. Names only -- never values."""
+def scan_logs(paths: list[str], markers: list[str]) -> tuple[list[str], list[dict], list[str]]:
+    """Collect kconfgen-reported unknown symbols from *requested* logs.
+
+    Returns (unknown_symbol_names, per_log_records, problems).
+
+    Requesting a log via --log is a claim that the log exists and holds the
+    kconfgen output to be judged. If it does not, that claim is false and the
+    caller must hear about it: the path is recorded with ``read: false`` (or
+    ``bytes: 0``) and a problem is returned, which main() turns into
+    RK-RELCFG-NOLOG and a non-zero exit. Silence is never inferred from absence.
+
+    Nothing from a log's *contents* is ever placed in the returned data or the
+    problems: only symbol names, the path, a byte count, and marker booleans.
+    Log lines carry assigned values, which can be credentials.
+    """
     found: list[str] = []
     scanned: list[dict] = []
+    problems: list[str] = []
+    marker_seen = {marker: False for marker in markers}
+
     for path in paths:
+        record: dict = {"path": path, "read": False, "bytes": 0}
         try:
             with open(path, encoding="utf-8", errors="replace") as handle:
                 text = handle.read()
         except OSError as exc:
-            scanned.append({"path": path, "read": False, "error": exc.__class__.__name__})
+            record["error"] = exc.__class__.__name__
+            scanned.append(record)
+            problems.append("requested log could not be read (%s): %s"
+                            % (exc.__class__.__name__, path))
             continue
+
+        record["read"] = True
+        record["bytes"] = len(text)
+        if not text.strip():
+            record["empty"] = True
+            scanned.append(record)
+            problems.append("requested log is empty: %s" % path)
+            continue
+
         hits = sorted({m.group(1) for m in KCONFGEN_UNKNOWN_RE.finditer(text)})
-        scanned.append({"path": path, "read": True, "unknown_symbols": hits})
+        record["unknown_symbols"] = hits
+        record["markers_found"] = sorted(m for m in markers if m in text)
+        for marker in markers:
+            if marker in text:
+                marker_seen[marker] = True
+        scanned.append(record)
         for sym in hits:
             if sym not in found:
                 found.append(sym)
-    return sorted(found), scanned
+
+    for marker in markers:
+        if not marker_seen[marker]:
+            problems.append("no requested log contains the required marker %r "
+                            "(the log read is not the one the gate wrote)" % marker)
+
+    return sorted(found), scanned, problems
 
 
 def main(argv: list[str]) -> int:
@@ -241,7 +302,12 @@ def main(argv: list[str]) -> int:
                         help="record whether the caller will fail the build on a bad verdict")
     parser.add_argument("--log", action="append", default=[], metavar="PATH",
                         help="build/configure log to scan for kconfgen's unknown-symbol "
-                             "warning (repeatable)")
+                             "warning (repeatable). Requesting a log makes its presence, "
+                             "readability and non-emptiness part of the contract: a log "
+                             "that cannot be read is RK-RELCFG-NOLOG, not silence.")
+    parser.add_argument("--log-must-contain", action="append", default=[], metavar="TEXT",
+                        help="require TEXT to appear in at least one --log (repeatable); "
+                             "proves the log actually read is the one the gate wrote")
     parser.add_argument("--defaults", action="append", default=[], metavar="PATH",
                         help="defaults file to record for provenance (repeatable); never "
                              "parsed for invariants -- kconfgen owns that verdict")
@@ -279,25 +345,35 @@ def main(argv: list[str]) -> int:
     rows: list[dict] = []
     violations: list[str] = []
     undefined: list[str] = []
-    log_symbols, logs_scanned = scan_logs(args.log)
+    log_symbols, logs_scanned, log_problems = scan_logs(args.log, args.log_must_contain)
 
-    if cfg is None:
-        tokens.append("%s: %s" % (TOKEN_NOCONFIG, noconfig_reason))
-        exit_code = EXIT_NOCONFIG
-    else:
+    if cfg is not None:
         rows, violations, undefined = evaluate(cfg)
         undefined = undefined + ["CONFIG_%s" % s for s in log_symbols]
-        if undefined:
-            for name in undefined:
-                tokens.append("%s: %s" % (TOKEN_UNDEFINED, name))
-            exit_code = EXIT_UNDEFINED
-        elif violations:
-            for sym in violations:
-                tokens.append("%s: %s" % (TOKEN_VIOLATION, sym))
-            exit_code = EXIT_VIOLATION
-        else:
-            tokens.append(TOKEN_OK)
-            exit_code = EXIT_OK
+
+    # Emit every applicable token, then let precedence pick the single exit code:
+    # NOCONFIG > NOLOG > UNDEFINED > VIOLATION. The first three mean "no
+    # trustworthy determination was made" and must outrank a policy violation.
+    if cfg is None:
+        tokens.append("%s: %s" % (TOKEN_NOCONFIG, noconfig_reason))
+    for problem in log_problems:
+        tokens.append("%s: %s" % (TOKEN_NOLOG, problem))
+    for name in undefined:
+        tokens.append("%s: %s" % (TOKEN_UNDEFINED, name))
+    for sym in violations:
+        tokens.append("%s: %s" % (TOKEN_VIOLATION, sym))
+
+    if cfg is None:
+        exit_code = EXIT_NOCONFIG
+    elif log_problems:
+        exit_code = EXIT_NOLOG
+    elif undefined:
+        exit_code = EXIT_UNDEFINED
+    elif violations:
+        exit_code = EXIT_VIOLATION
+    else:
+        tokens.append(TOKEN_OK)
+        exit_code = EXIT_OK
 
     verdict = "pass" if exit_code == EXIT_OK else "fail"
     digest = sha256_file(args.config)
@@ -315,7 +391,10 @@ def main(argv: list[str]) -> int:
                      for p in args.defaults],
         "invariants": rows,
         "undefined_symbols": undefined,
+        "logs_requested": len(args.log),
         "logs_scanned": logs_scanned,
+        "logs_required_markers": list(args.log_must_contain),
+        "log_problems": log_problems,
     }
 
     if args.report:

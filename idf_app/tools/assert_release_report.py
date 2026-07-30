@@ -64,6 +64,11 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--config", help="path to the sdkconfig.json the report should describe")
     parser.add_argument("--expect-verdict", choices=["pass", "fail"], default="pass")
     parser.add_argument("--expect-enforced", choices=["true", "false"], default="true")
+    parser.add_argument("--require-logs-read", action="store_true",
+                        help="additionally require the report to prove a log was actually "
+                             "read: at least one entry in logs_scanned, every entry "
+                             "read with non-zero bytes, every required marker found, and "
+                             "no recorded log problems")
 
     def _usage_error(message: str) -> None:
         sys.stdout.write("%s: %s\n" % (TOKEN_USAGE, message))
@@ -104,6 +109,33 @@ def main(argv: list[str]) -> int:
         if report.get("verdict") != args.expect_verdict:
             failures.append("verdict is %r, expected %r"
                             % (report.get("verdict"), args.expect_verdict))
+
+        if args.require_logs_read:
+            # A report that scanned no log cannot be evidence that the
+            # kconfgen-delegated undefined-symbol determination was made.
+            scanned = report.get("logs_scanned")
+            if not isinstance(scanned, list) or not scanned:
+                failures.append("report proves no log was read (logs_scanned is empty): "
+                                "the undefined-symbol determination did not happen")
+            else:
+                for entry in scanned:
+                    path = entry.get("path") if isinstance(entry, dict) else "<malformed>"
+                    if not isinstance(entry, dict) or entry.get("read") is not True:
+                        failures.append("report says log was not read: %s" % path)
+                    elif not entry.get("bytes"):
+                        failures.append("report says log was empty: %s" % path)
+            required = report.get("logs_required_markers") or []
+            found = set()
+            if isinstance(scanned, list):
+                for entry in scanned:
+                    if isinstance(entry, dict):
+                        found.update(entry.get("markers_found") or [])
+            for marker in required:
+                if marker not in found:
+                    failures.append("report does not show required log marker %r" % marker)
+            problems = report.get("log_problems") or []
+            for problem in problems:
+                failures.append("report records a log problem: %s" % problem)
 
         if args.config:
             local = sha256_file(args.config)

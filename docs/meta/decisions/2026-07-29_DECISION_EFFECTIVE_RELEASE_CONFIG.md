@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-29
 **Issue:** [#202](https://github.com/muness/roon-knob/issues/202) (parent [#189](https://github.com/muness/roon-knob/issues/189), program [#201](https://github.com/muness/roon-knob/issues/201), epic [#196](https://github.com/muness/roon-knob/issues/196))
-**Status:** Accepted, implementation landed
+**Status:** Accepted; implemented and enforced from this commit. **Pending first container-CI evidence** — the gate, both host assertions, `release-config-fixtures` and `build-stale-config` have never executed in CI at the time of writing. Host-side proof is real (fixture suite green); the container half is designed-for, not observed. Backfill the run ID here once PR #204 carries this commit and all four surfaces are green.
 **Supersedes (partially):** the release-safety role of the `sdkconfig.defaults` staleness guard from closed #149
 
 ## Context
@@ -14,7 +14,7 @@ That framing is wrong in a way worth writing down, because it will recur.
 
 * **stale** — an existing `idf_app/sdkconfig` takes precedence, so a newly added default is silently ignored (this is exactly what #149 was created for);
 * **undefined** — a symbol that no longer exists is accepted, ignored, and warned about in a line nobody reads;
-* **overridden** — `sdkconfig.local`, `SDKCONFIG_DEFAULTS`, `sdkconfig.override`, and `-D` cache variables all change the outcome;
+* **overridden** — `sdkconfig.local` (wired by `scripts/install.sh`, which exports `SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.local"`), the `SDKCONFIG_DEFAULTS` environment variable, and `-D` cache variables all change the outcome. (`idf_app/sdkconfig.override` exists in the tree but is **not** a wired override path: nothing in this repo passes it to IDF and IDF does not read it on its own. It is named here only to correct an earlier draft of this record that listed it as one. It was not read, modified, or staged by this work.)
 * **incomplete** — most of the resolved configuration comes from IDF's own Kconfig defaults, which change with the SDK.
 
 So the file cannot prove what the compiler actually used. Adding one line to it would have produced a release build that *probably* was optimized. IDF, however, writes the fully resolved configuration to `build/config/sdkconfig.json` during `project()`. That artifact **can** prove it.
@@ -25,9 +25,9 @@ The reframe: **enforce a small release policy against IDF's generated effective 
 
 1. A dependency-free checker, `idf_app/tools/check_release_config.py`, validates declared release invariants against an explicitly named `sdkconfig.json`, emits stable `RK-RELCFG-*` tokens and a JSON report, and identifies its own failure modes rather than passing silently.
 2. `idf_app/cmake/rk_release_config.cmake`, included **after** `project()`, runs the checker at configure time, always writes the report, always prints a banner, and defers failure via `fail_at_build_time()`.
-3. CI forces enforcement **on** through the ci-action's `command:` input and then **asserts the report on the host**.
-4. Undefined-symbol detection is **delegated to kconfgen**, not reimplemented.
-5. Negative proof lives in committed fixtures plus exactly one integration build.
+3. CI forces enforcement **on** through the ci-action's `command:` input and then **asserts the report on the host**, including that the build log the undefined-symbol scan read is the one the gate wrote.
+4. Undefined-symbol detection is **delegated to kconfgen**, not reimplemented — and a requested-but-missing verdict is a failure, not silence.
+5. Negative proof lives in committed fixtures plus exactly one integration build, and both **gate** shipping via `release`'s `needs:` rather than merely reporting.
 6. #149's guard is restored, with its limited local purpose documented rather than overstated.
 
 ## The measurement that chose the optimization mode
@@ -67,6 +67,21 @@ All three modes link. **SIZE wins outright**: smallest image (−147 968 B vs DE
 
 `sdkconfig.defaults` therefore carries `CONFIG_COMPILER_OPTIMIZATION_SIZE=y`.
 
+### The limit of this measurement — read this before quoting "chosen by measurement"
+
+Every metric above is **static**: link success, image bytes, static DIRAM/IRAM. There is **no dynamic datapoint**. `-Og` → `-Os` is a behavioural change on a device whose felt qualities are encoder responsiveness and LVGL redraw smoothness, and nothing here measured either. "Chosen by measurement" must never be read as "chosen by performance measurement."
+
+What makes that acceptable rather than reckless is reversibility: the gate accepts SIZE **or** PERF, so switching is a one-line `sdkconfig.defaults` diff that the gate still checks — no gate, fixture, or ADR edit required.
+
+**#203's combined hardware test must therefore include, as named items:**
+
+1. **Encoder input latency** at `-Os` — rotation-to-visible-response, including fast continuous rotation.
+2. **LVGL redraw** — artwork transitions and screen changes; watch for dropped frames or tearing that `-Og` did not show.
+3. **Battery brownout behaviour at `-Os`** against the level-4 / 2.50 V tuning, on battery, including Wi-Fi association inrush (the condition that made level 7 unusable).
+4. **Boot and OTA from a prior release** built at `-Og`, to confirm the mode change does not interact with the update path.
+
+If any of those regress, the remedy is the one-line switch to PERF (which costs ~151 KB of image and ~7 KB of DIRAM against SIZE, per the table above), not reverting the gate.
+
 ### Why the gate does not pin SIZE
 
 The invariant is deliberately looser than the measurement: **exactly one of `COMPILER_OPTIMIZATION_SIZE` / `COMPILER_OPTIMIZATION_PERF` true, and `COMPILER_OPTIMIZATION_DEBUG` / `COMPILER_OPTIMIZATION_NONE` false.**
@@ -75,23 +90,33 @@ The gate's job is "this build is optimized," which is the property that was actu
 
 ## Invariants asserted
 
-Every symbol name and expected default below was verified **against IDF commit `8543b57cf15`** — the exact tree CI built with — not against a local checkout.
+Every symbol name and expected default below was verified **against IDF commit `8543b57cf15`** — the exact tree CI built with — not against a local checkout. References are given as *symbol declarations in named files*, deliberately **not** as `Kconfig:NNN` line anchors: those drift with every SDK bump and were already stale against a locally installed v5.5.3 within a day of being written. Locate with `grep -rn "^ *config <SYMBOL>$" $IDF_PATH/components/`.
 
-| Invariant | Expected | Why | Verified at |
+| Invariant | Expected | Why | Declared in |
 |---|---|---|---|
-| `COMPILER_OPTIMIZATION` choice | exactly one of SIZE/PERF; never DEBUG/NONE | the release must be optimized | `Kconfig:345-351` |
-| `COMPILER_OPTIMIZATION_ASSERTIONS_ENABLE` | true | OTA field devices, no crash-reporting channel; pins IDF's own default | `Kconfig:370` |
-| `SPIRAM` | true | artwork RGB565 buffers do not fit without PSRAM | `esp_psram/esp32s3/Kconfig.spiram:1` |
-| `PARTITION_TABLE_CUSTOM` | true | OTA layout comes from `partitions.csv` | `partition_table/Kconfig.projbuild:61` |
-| `HEAP_POISONING_DISABLED` | true | debug-only cost; IDF default | `heap/Kconfig:12` |
-| `HEAP_TRACING_OFF` | true | permanent IRAM + malloc overhead; IDF default | `heap/Kconfig:30` |
-| `COMPILER_DUMP_RTL_FILES` | false | debug-only compiler output | `Kconfig:597` |
-| `ESP_DEBUG_STUBS_ENABLE` | false | debug-only on-target stubs | `esp_system/Kconfig:529` |
-| `ESP_SYSTEM_PANIC_GDBSTUB` | false | a field device must reboot, not wait for gdb | `esp_system/Kconfig:39` |
-| `FREERTOS_USE_TRACE_FACILITY` | false | debug-only scheduler bookkeeping | `freertos/Kconfig:256` |
-| `ESPTOOLPY_FLASHSIZE` | `"16MB"` | must match what the committed defaults declare | `esptool_py/Kconfig.projbuild:136` |
+| `COMPILER_OPTIMIZATION` choice | exactly one of SIZE/PERF; never DEBUG/NONE | the release must be optimized | root `Kconfig`, `choice COMPILER_OPTIMIZATION` |
+| `COMPILER_OPTIMIZATION_ASSERTIONS_ENABLE` | true | OTA field devices, no crash-reporting channel; pins IDF's own default | root `Kconfig`, `choice COMPILER_OPTIMIZATION_ASSERTION_LEVEL` (first member = default) |
+| `SPIRAM` | true | artwork RGB565 buffers do not fit without PSRAM | `esp_psram/esp32s3/Kconfig.spiram` |
+| `PARTITION_TABLE_CUSTOM` | true | OTA layout comes from `partitions.csv` | `partition_table/Kconfig.projbuild` |
+| `HEAP_POISONING_DISABLED` | true | debug-only cost; IDF default | `heap/Kconfig`, `choice HEAP_CORRUPTION_DETECTION` (`default HEAP_POISONING_DISABLED`) |
+| `HEAP_TRACING_OFF` | true | permanent IRAM + malloc overhead; IDF default | `heap/Kconfig`, `choice HEAP_TRACING_DEST` (`default HEAP_TRACING_OFF`) |
+| `COMPILER_DUMP_RTL_FILES` | false | debug-only compiler output | root `Kconfig` |
+| `ESP_DEBUG_STUBS_ENABLE` | false | debug-only on-target stubs | `esp_system/Kconfig` (its default tracks the debug optimization level, so choosing SIZE satisfies this as a side effect rather than by declaration) |
+| `ESP_SYSTEM_PANIC_GDBSTUB` | false | a field device must reboot, not wait for gdb | `esp_system/Kconfig`, `choice ESP_SYSTEM_PANIC` (non-default member) |
+| `FREERTOS_USE_TRACE_FACILITY` | false | debug-only scheduler bookkeeping | `freertos/Kconfig` (`default n`; selected only by `FREERTOS_GENERATE_RUN_TIME_STATS`, itself `default n`) |
+| `ESPTOOLPY_FLASHSIZE` | `"16MB"` | must match what the committed defaults declare | `esptool_py/Kconfig.projbuild` (string, defaulted from the `ESPTOOLPY_FLASHSIZE_*` choice) |
 
-**Nothing was written into `sdkconfig.defaults` merely because it happens to be true today.** The five "inherited IDF default" symbols are checker assertions, not new default lines. The only line added to that file is the measured optimization choice.
+**Nothing was written into `sdkconfig.defaults` merely because it happens to be true today.** The "inherited IDF default" symbols are checker assertions, not new default lines. The only line added to that file is the measured optimization choice.
+
+### Why inherited defaults are asserted but not declared — and what a failure means
+
+Four of these invariants (`COMPILER_OPTIMIZATION_ASSERTIONS_ENABLE`, `HEAP_POISONING_DISABLED`, `HEAP_TRACING_OFF`, and the `false` debug symbols) pin values the repo never writes down, over a **mutable** `release-v5.4` tag. That combination is a deliberate choice, and the objection to it is fair enough to answer explicitly rather than leave implied.
+
+Writing those values into `sdkconfig.defaults` was **excluded by the accepted phase-1 adjustment** ("nothing is written into `sdkconfig.defaults` merely because it is true today"), for a good reason: a committed line asserting an IDF default is indistinguishable, six months later, from a deliberate project decision, and it silences precisely the signal we want. Pinning the SDK to an immutable tag was **also excluded** — all SDK version selection and pinning is #183, and #202 changing `esp_idf_version` would quietly take over another issue's one-way door.
+
+So the intended semantics are: **an invariant failure under a moved `release-v5.4` is drift detection working, not the gate malfunctioning.** If an upstream default flips, `build-idf` goes red naming the symbol, and the correct response is to *remeasure and review* — decide whether the new upstream default is right for this device, then either accept it (adjust the invariant, recording why) or declare the value explicitly (making it a project decision, recording why). What must not happen is `continue-on-error`, deleting the step, or adding a blanket allowlist. The cost of this design is a possible red build on an unrelated PR; the benefit is that a silent upstream behaviour change cannot reach users' devices unnoticed. That trade was made knowingly.
+
+Immutable SDK selection remains **#183**. When it lands, this whole class of failure becomes a deliberate, reviewed event at version-bump time instead of an ambient risk — which is the right place for it.
 
 ### Absence is directional, and that is deliberate
 
@@ -102,6 +127,18 @@ IDF omits a symbol from `sdkconfig.json` when it is not written out, so "key mis
 * the **entire optimization choice family** absent → `RK-RELCFG-UNDEFINED` (exit 4). That is not a configuration error; it means the symbol names moved out from under the checker, and it must not read as a pass.
 
 This is what keeps "absent ≠ pass" honest without manufacturing false positives out of IDF's own visibility semantics.
+
+The same principle governs a **requested but unreadable log**: `--log` is how kconfgen's undefined-symbol verdict reaches the checker, so an absent, unreadable or empty log is `RK-RELCFG-NOLOG` (exit 5), never silence. Passing no `--log` is different and legitimate — the determination is simply not requested, which is the configure-time gate's case — and never fails on that basis. In CI the log is additionally required to contain `RK-RELCFG-VERDICT:`, which proves the log read is the one the gate itself wrote rather than some other file that happened to exist.
+
+### Token precedence
+
+When several conditions hold at once, **every** applicable token is printed and recorded in the report; only the exit code is single-valued, resolved as:
+
+```
+NOCONFIG (3)  >  NOLOG (5)  >  UNDEFINED (4)  >  VIOLATION (2)
+```
+
+The first three mean *no trustworthy determination was made* and must outrank a mere policy violation — reporting "the optimization mode is wrong" when the real problem is "the config could not be parsed" would send the reader to the wrong place. Nothing is hidden by the precedence: a config that is both undefined and violating exits 4 while its violation rows remain visible in the report's `invariants`, and fixtures assert exactly that.
 
 ### Not asserted here
 
@@ -123,10 +160,11 @@ An earlier review proposed reconstructing that determination from three build ar
 * kconfgen's verdict is **visibility-independent and alias-correct**: `missing_syms` is appended only for genuinely undefined symbols (`not sym.nodes`), and renames are excluded by consulting the `sdkconfig.rename` files directly.
 * **#202's acceptance criterion as originally worded was accurate.** The "correction" away from it was the error.
 
-So the checker **consumes** that line (`--log`) and never re-derives it. Two consequences worth stating:
+So the checker **consumes** that line (`--log`) and never re-derives it. Three consequences worth stating:
 
-* **The value is never captured.** The regex stops before the assigned value, because `sdkconfig.defaults` historically carried a credential and a gate must not become an exfiltration path. A fixture asserts the value never appears in output.
+* **The value is never captured.** The regex stops before the assigned value, because `sdkconfig.defaults` historically carried a credential and a gate must not become an exfiltration path. A fixture asserts the value never appears in output — including on the new `RK-RELCFG-NOLOG` paths, where only the path, a byte count and marker booleans are ever reported, never log content.
 * **This layer is enforced in CI, not at configure time.** `kconfig.cmake` does not capture kconfgen's stdout, so the configure-time run's warnings are not available to the checker without re-invoking kconfgen. Rather than re-run it with reconstructed arguments, CI tees the build log and scans it. Locally, an undefined default warns (kconfgen's own output) but does not fail. That is an honest ceiling, not an oversight.
+* **Delegation must not become abdication.** Consuming someone else's verdict introduces a failure mode reimplementation does not have: the verdict can simply fail to arrive. So requesting a log via `--log` makes its existence, non-emptiness and identity part of the contract — absent, unreadable, empty, or missing the `RK-RELCFG-VERDICT:` marker all produce `RK-RELCFG-NOLOG` (exit 5) and a `verdict:"fail"` report. This closed a real fail-open hole: the same invocation with a missing log previously exited 0 with `RK-RELCFG-OK`, so a renamed or dropped `tee` would have silently disabled one of #202's own acceptance criteria forever. Fixtures now cover missing, empty, whitespace-only and wrong-log cases, and the host asserter can require the report to *prove* a log was read (`--require-logs-read`).
 
 ### Removed lines
 
@@ -140,7 +178,12 @@ Confirmed by kconfgen **in the CI container** (measurement logs, all three build
 | 33 | `CONFIG_LWIP_NETIF_HOSTNAME` | not an IDF symbol; hostname comes from `CONFIG_LWIP_LOCAL_HOSTNAME` |
 | 85 | `CONFIG_LWIP_NETIF_HOSTNAME` | duplicate of line 33 |
 
-**Retained deliberately:** the four brownout rename aliases (old lines 41–44). kconfgen reports these as `was replaced with`, i.e. *renames*, not unknown symbols, and the level-4 / 2.50 V tuning they carry exists because level 7 caused boot failures on battery from Wi-Fi inrush. A fixture asserts that rename lines do **not** trip the gate.
+**Retained deliberately:** the four brownout rename aliases (old lines 41–44), as required by the accepted phase-1 adjustment ("retain documented brownout rename aliases unless separately justified"). The rationale needs stating precisely, because an earlier draft of this record got it wrong:
+
+* **The aliases do not carry the tuning.** The canonical `CONFIG_ESP_BROWNOUT_DET_LVL_SEL_4=y` and `CONFIG_ESP_BROWNOUT_DET_LVL=4` lines immediately above them carry the effective level-4 / 2.50 V configuration. The four alias lines resolve to those same two values through `esp_system/sdkconfig.rename` and `sdkconfig.rename.esp32s3`, so as *effective configuration* they are redundant. It is not true that deleting them would lose the tuning.
+* **They are retained as transition/history compatibility inputs**, deliberately: they let this defaults file be applied to older trees and older branches (v4 lineage) where the pre-rename symbol names were the real ones, and they document, in-file, which names the tuning has travelled under. Deleting them is a separate, justifiable change — explicitly **out of scope here** and not made.
+* **Their present behaviour is tested, not assumed.** `tools/fixtures/kconfgen_rename.log` carries the actual `was replaced with` notices these lines produce in the CI container, and a fixture asserts the checker exits 0 on them. Renames are not unknown symbols.
+* **Their eventual promotion to `unknown kconfig symbol` is a deliberate, pre-explained loud signal, not a mystery.** When IDF eventually drops those rename entries, the log gate turns `build-idf` red naming the alias. That is the intended drift alarm: it tells us the compatibility window has closed, at which point the correct response is to delete the four alias lines (the canonical lines already carry the tuning, so the effective configuration does not change) and record that the window closed. This paragraph exists so that whoever sees that red build finds the answer here instead of guessing.
 
 Note on line 2: it is removed because kconfgen proves it is undefined and inert, **not** as credential remediation. The value remains in git history, and history/credential remediation stays out of scope for #202 (private operational track). `idf_app/sdkconfig.override` was not read, modified, or staged.
 
@@ -167,9 +210,11 @@ Two hardening requirements at the call site, both verified as real and both impl
 
 "CI cannot opt out" is true only with the host assertion, and even then it has edges:
 
-1. `fail_at_build_time()` creates an `ALL` target, so the gate fires for `idf.py build` but **not** for target-selected invocations such as `idf.py app`. A developer can produce a `roon_knob.bin` locally with the gate never running. Local coverage is ergonomic, not absolute.
+1. `fail_at_build_time()` creates an `ALL` target, so the gate fires for **anything that builds `all`** — which includes both `idf.py build` and `idf.py flash`, since the flash action carries `all` in its dependencies. The bypass is narrower than an earlier draft of this record claimed: specifically **`idf.py app` and `idf.py app-flash`**, which build the app target directly. So the dominant local paths *are* covered, and a developer has to reach for a component-specific target to produce a `roon_knob.bin` with the gate never running. Local coverage is broad but not absolute.
 2. The host assertion catches a flipped flag, a deleted checker, and a removed CMake call. It does **not** catch **deletion of the assertion step itself**, and nothing in-repo can. Closing that requires branch protection with required checks — out of repo, and not touched by #202.
-3. `espressif/idf:release-v5.4` is a **mutable tag**. The measurement table above is attributable to `v5.4.4-1000-g8543b57cf15` / GCC 14.2.0 because those were recorded, but a future run of the same workflow may resolve to a different commit. Recording is not pinning; SDK pinning is #183/#203. If the numbers are ever re-derived, re-record the provenance rather than assuming this table still applies.
+3. `espressif/idf:release-v5.4` is a **mutable tag**. The measurement table above is attributable to `v5.4.4-1000-g8543b57cf15` / GCC 14.2.0 because those were recorded, but a future run of the same workflow may resolve to a different commit. Recording is not pinning; SDK pinning is #183. An invariant failure after the tag moves is drift detection working as intended — see "Why inherited defaults are asserted but not declared" above for the required response. If the numbers are ever re-derived, re-record the provenance rather than assuming this table still applies.
+4. `RK_ENFORCE_RELEASE_CONFIG=OFF` is a CMake **cache** variable: once set in a build tree it persists for every subsequent build in that tree, with no further mention on the command line. The multi-line `*** RELEASE CONFIG INVARIANTS NOT ENFORCED ***` banner is re-emitted on every configure precisely so that state stays visible rather than silently inherited; if you are ever unsure whether a local artifact was gated, grep the build log for that banner.
+5. The undefined-symbol layer is enforced **in CI, not at configure time**, because `kconfig.cmake` does not capture kconfgen's stdout for the checker to read. Locally an undefined default warns in kconfgen's own output but does not fail the build. This ceiling was previously worse than stated: a requested log that was absent, empty or unreadable used to be treated as "nothing found" and exit 0, which made the CI half fail *open*. That is now `RK-RELCFG-NOLOG` (exit 5), and CI additionally requires the log to contain `RK-RELCFG-VERDICT:` so a renamed or dropped `tee` cannot pass vacuously.
 
 ### `ESPTOOLPY_FLASHSIZE` = 16MB vs the 8MB merge — deliberately unresolved
 
@@ -181,15 +226,19 @@ Invariants are declared for the default profile only. `sdkconfig.defaults.ble` i
 
 ## Negative proof
 
-| Layer | What only it can prove | Cost |
-|---|---|---|
-| `tools/fixtures/` + `tools/test_check_release_config.sh` (CI job `release-config-fixtures`) | the checker's logic: exact exit code and exact token per case, positive and negative, including that rename aliases pass and that assigned values are never echoed | host-only, seconds |
-| assert-the-assertion cases in the same runner | that the host gate has teeth: it rejects `enforced:false`, a digest belonging to another build, a missing report, and a failing verdict | host-only, folded in rather than a separate job |
-| CI job `build-stale-config` | the wiring: a stale `sdkconfig` that ignores the committed defaults is caught at configure time, for the stated reason | one container build |
+| Layer | What only it can prove | Cost | Gates shipping? |
+|---|---|---|---|
+| `tools/fixtures/` + `tools/test_check_release_config.sh` (CI job `release-config-fixtures`) | the checker's logic: exact exit code and exact token per case, positive and negative, including that rename aliases pass, that a requested-but-unreadable log fails, and that assigned values are never echoed | host-only, seconds | **yes** — in `release` *and* `deploy-pr-preview` `needs:` |
+| assert-the-assertion cases in the same runner | that the host gate has teeth: it rejects `enforced:false`, a digest belonging to another build, a missing report, a failing verdict, and a report proving no log was read | host-only, folded in rather than a separate job | **yes** — same job |
+| CI job `build-stale-config` | the wiring: a stale `sdkconfig` that ignores the committed defaults is caught at configure time, for the stated reason | one container build | **yes** — in `release` `needs:` |
 
-`build-stale-config` requires **all three** of: step outcome `failure`, the exact token `RK-RELCFG-VIOLATION: COMPILER_OPTIMIZATION_DEBUG` in the log, and a report with `verdict:"fail"`. An unrelated compile break yields the first but not the other two, so it goes red as a red herring rather than passing as a false proof. It never calls `set-target`, which would rename the seeded `sdkconfig` to `sdkconfig.old` and destroy the condition under test.
+These jobs **require** evidence rather than merely producing it. `release` declares `needs: [build-idf, release-config-fixtures, build-stale-config]`, so a red checker-logic job or a red wiring job stops a `v*` tag from publishing firmware; `deploy-pr-preview` additionally needs the fast fixture job, so a hardware-flashable preview cannot come from a tree whose checker is broken. Neither prerequisite carries an `if:` event guard, deliberately: a *skipped* dependency skips the dependent job as well, so an event-guarded prerequisite would silently un-gate exactly the tag builds it was meant to protect. The price is that `build-stale-config` runs on every push, not only on pull requests — one container build of runner time, accepted in exchange for a graph whose safety does not depend on reading GitHub's skip semantics correctly.
 
-Exit codes are contract, asserted by fixtures: `0` OK, `2` violation, `3` no/malformed config, `4` undefined, `64` usage error (distinct from every verdict).
+`build-stale-config` requires **all three** of: step outcome `failure`, the exact token `RK-RELCFG-VIOLATION: COMPILER_OPTIMIZATION_DEBUG` in the log, and a report with `verdict:"fail"`. **The discriminator is the token, not the step outcome.** An earlier draft of this record claimed an unrelated compile break "yields the first but not the other two" — that is wrong, and the correction matters: the gate fires at *configure* time, before any compilation, so in this deliberately-violating tree the report and the token are already produced and a later compile break changes neither. What the three-way requirement actually buys is that a failure with **no token** — a container hiccup, a checkout problem, a configure error unrelated to the gate — cannot be mistaken for the gate firing. The job goes red either way; the token is what tells you *why*, which is the whole point of asserting the reason rather than the failure.
+
+It never calls `set-target`, which would rename the seeded `sdkconfig` to `sdkconfig.old` and destroy the condition under test.
+
+Exit codes are contract, asserted by fixtures: `0` OK, `2` violation, `3` no/malformed config, `4` undefined, `5` requested log absent/unreadable/empty/missing its marker, `64` usage error (distinct from every verdict). Precedence is documented above.
 
 ## #149's guard: restored and re-scoped
 
@@ -212,12 +261,33 @@ It is restored rather than merely superseded because of one non-substitutable co
 
 ## Consequences
 
-* A release build that resolves to a debug or unsafe configuration now fails, at configure time, naming the symbol.
-* CI's enforcement is provable from an artifact rather than assumed from a workflow line.
-* The optimization mode is now a recorded measurement, so the next maintainer does not have to guess whether it was reasoned or copied.
+* A release build that resolves to a debug or unsafe configuration fails from this commit onward, at configure time, naming the symbol. **First container-CI evidence is still outstanding** — see Status.
+* CI's enforcement is designed to be provable from an artifact rather than assumed from a workflow line, and the jobs that prove it now **gate** publishing rather than merely reporting. Whether it holds in practice is a claim this record cannot yet make.
+* The optimization mode is a recorded measurement, so the next maintainer does not have to guess whether it was reasoned or copied — but it is a *static* measurement; see "The limit of this measurement".
 * `roon_knob.bin` shrinks from 1 761 952 B to 1 613 984 B (67.21 % → 61.57 % of the app slot) and static DIRAM drops 10 672 B. This is a **behavioural change** — `-Og` → `-Os` — and CI cannot validate it. It interacts with the brownout tuning above.
 * Hardware validation is release-blocking but **not** merge-blocking: #202 merges on contract/CI evidence; #203's PR build (containing both #202 and #203) is the single combined hardware-test candidate; the release-blocking checklist lives on #189 and blocks **tagging**, not merging.
-* New CI surface: enforcement forcing plus two host assertions in `build-idf`, one host fixture job, and one integration build. The known adoption risk is that a red-for-infrastructure-reasons job gets `continue-on-error` or is quietly dropped during #203's workflow edit. The fixtures job is seconds and host-only specifically to keep that pressure low.
+* New CI surface: enforcement forcing plus three host assertions in `build-idf`, one host fixture job, and one integration build that now runs on every push. The known adoption risk is that a red-for-infrastructure-reasons job gets `continue-on-error` or is quietly dropped during #203's workflow edit. Three things push against that: the fixtures job is seconds and host-only, the ADR names the required response to a drift-induced red build (remeasure and review, never allowlist), and both proof jobs are now in `release`'s `needs:` so dropping them is a visible change to the shipping path rather than a quiet one.
+
+## Handoff to #203
+
+Carry these forward when #203 opens; they are consequences of #202, not #202's own scope:
+
+**Static / build-time (the half CI can check):**
+
+1. Reconcile `CONFIG_ESPTOOLPY_FLASHSIZE="16MB"` against `esptool merge-bin --flash-size 8MB`, and decide the direction (with #193 for hardware identity).
+2. Image geometry and partition-fits-flash checks; size-headroom gate against the `0x280000` app slot — SIZE currently sits at 61.57 %.
+3. `PROJECT_VER` binary inspection and the build-evidence artifact (`$GITHUB_STEP_SUMMARY` reporting), both deliberately excluded here.
+4. Re-measure DEBUG/SIZE/PERF if the SDK moves, and **re-record provenance** rather than reusing this table.
+
+**Hardware (the half CI cannot check) — the combined #202+#203 PR build is the single test candidate:**
+
+5. **Encoder input latency** at `-Os`, including fast continuous rotation.
+6. **LVGL redraw** smoothness — artwork transitions, screen changes, dropped frames or tearing that `-Og` did not show.
+7. **Battery brownout at `-Os`** against the level-4 / 2.50 V tuning, on battery, through Wi-Fi association inrush.
+8. **Boot and OTA from a prior `-Og` release**, confirming the mode change does not break the update path.
+9. Board revision recorded, plus the enforcement banner and a `sha256sum` reconcilable with the CI artifact.
+
+If 5–8 regress, the remedy is the one-line SIZE→PERF switch in `sdkconfig.defaults`, which the gate still checks — not disabling the gate.
 
 ## References
 
