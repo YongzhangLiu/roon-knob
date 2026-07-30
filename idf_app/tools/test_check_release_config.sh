@@ -203,6 +203,17 @@ expect "NOREPORT outranks VIOLATION"  6 "RK-RELCFG-VIOLATION: COMPILER_OPTIMIZAT
     -- "$PY" "$CHECKER" --config "$FIX/opt_debug.json" --report "$FIX/pass.json/report.json"
 expect "NOCONFIG outranks NOLOG"    3 "RK-RELCFG-NOCONFIG" \
     -- "$PY" "$CHECKER" --config "$FIX/malformed.json" --log "$TMP/never_written.log"
+expect "NOCONFIG keeps log UNDEFINED visible" 0 "noconfig-log-precedence-ok" -- "$PY" -c "
+import subprocess, sys
+p=subprocess.run([sys.executable, '$CHECKER', '--config', '$FIX/malformed.json',
+                  '--log', '$FIX/kconfgen_undefined.log'], text=True, capture_output=True)
+out=p.stdout+p.stderr
+assert p.returncode==3, p.returncode
+assert 'RK-RELCFG-NOCONFIG' in out, out
+assert 'RK-RELCFG-UNDEFINED: CONFIG_WIFI_SSID' in out, out
+assert 'fixture-value-must-never-be-echoed' not in out, out
+print('noconfig-log-precedence-ok')
+"
 expect "NOLOG outranks UNDEFINED"   5 "RK-RELCFG-NOLOG" \
     -- "$PY" "$CHECKER" --config "$FIX/pass.json" --log "$FIX/kconfgen_undefined.log" \
        --log "$TMP/never_written.log"

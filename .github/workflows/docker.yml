@@ -300,8 +300,11 @@ jobs:
   release-config-fixtures:
     name: release-config-fixtures
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Run checker and host-assertion fixtures (#202)
         run: idf_app/tools/test_check_release_config.sh
@@ -333,6 +336,8 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       # A FAITHFUL stale tree: a full copy of the committed defaults with ONLY the
       # optimization selection regressed to what a pre-#202 developer tree carried.

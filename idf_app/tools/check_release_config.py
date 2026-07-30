@@ -407,12 +407,12 @@ def main(argv: list[str]) -> int:
 
     rows: list[dict] = []
     violations: list[str] = []
-    undefined: list[str] = []
     log_symbols, logs_scanned, log_problems = scan_logs(args.log, args.log_must_contain)
+    undefined: list[str] = ["CONFIG_%s" % symbol for symbol in log_symbols]
 
     if cfg is not None:
-        rows, violations, undefined = evaluate(cfg)
-        undefined = undefined + ["CONFIG_%s" % s for s in log_symbols]
+        rows, violations, config_undefined = evaluate(cfg)
+        undefined = config_undefined + undefined
 
     # Emit every applicable token, then let precedence pick the single exit code:
     # NOCONFIG > NOLOG > UNDEFINED > VIOLATION. The first three mean "no
