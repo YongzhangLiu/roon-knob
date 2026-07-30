@@ -29,12 +29,15 @@
 #     is therefore broad but not absolute.
 #   * CI's non-optionality is real but narrow. The workflow forces enforcement ON
 #     and then asserts this report on the host (tools/assert_release_report.py),
-#     so a build-idf job cannot run unenforced; and publication is gated via
-#     needs:. Both publishing consumers gate on the SAME set: `release` and
+#     so a build-idf job cannot run unenforced; and publication eligibility is
+#     gated via needs:. Both publishing consumers gate on the SAME prerequisite
+#     set: `release` and
 #     `deploy-pr-preview` each need ALL THREE proof jobs -- needs: [build-idf,
 #     release-config-fixtures, build-stale-config]. A red or skipped proof job
-#     therefore stops both a release and a flashable PR preview. Two further
-#     things none of this covers: deleting the host step is not detectable from
+#     therefore stops both a release and a flashable PR preview. This is not
+#     artifact-validation parity: only `release` re-asserts the downloaded report;
+#     #210 owns the preview-side gap. Two further things none of this covers:
+#     deleting the host step is not detectable from
 #     inside the repo, and CI does not gate MERGING -- branch protection on
 #     master currently defines NO required status checks, so nothing here stops
 #     a merge with these jobs red. Closing either needs required checks, which

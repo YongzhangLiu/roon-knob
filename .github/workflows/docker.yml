@@ -70,14 +70,15 @@ jobs:
       # (assert-the-assertion cases).
       # Scope that claim precisely -- an earlier version of this comment said "CI
       # cannot opt out", which is too broad. What holds: a job cannot run
-      # unenforced, and publication is gated by real `needs:` edges. Both
-      # publishing consumers now gate on the SAME set -- `release` and
+      # unenforced, and publication eligibility is gated by real `needs:` edges.
+      # Both publishing consumers now gate on the SAME prerequisite set -- `release` and
       # `deploy-pr-preview` each declare `needs: [build-idf,
       # release-config-fixtures, build-stale-config]` -- so any one of the three
       # proof jobs red or skipped stops both a published firmware asset and a
       # flashable PR preview. Earlier versions of this comment described an
       # asymmetry (the preview path needing only two of the three); that gap is
-      # closed, so do not re-derive it from this comment.
+      # closed. This is not artifact-validation parity: only `release` re-asserts
+      # the downloaded report before publishing; #210 owns the preview-side gap.
       # What does NOT hold at all: that CI blocks MERGING. Branch protection on
       # master currently has no required status checks, 0 required approvals and
       # enforce_admins off, so a maintainer can merge with these jobs red. Making
@@ -330,7 +331,7 @@ jobs:
     # run 1 aborts at the gate within seconds (its failing target has no
     # dependencies, so ninja stops almost immediately and compiles almost
     # nothing), which means run 2 is effectively a full build rather than an
-    # incremental one. Exact-head run 30524500149 observed 3m38s here versus
+    # incremental one. Run 30524500149 observed 3m38s here versus
     # 3m45s for build-idf, so the serial pair has not measured slower in practice.
     # 60 remains a deliberately conservative failure ceiling for cold-pull and
     # runner variance, not a claim that the job takes twice as long. Tighten it
