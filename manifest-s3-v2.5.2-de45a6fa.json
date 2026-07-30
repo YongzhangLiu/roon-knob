@@ -1,0 +1,12 @@
+{
+  "name": "Roon Knob (Main Controller)",
+  "version": "2.5.2",
+  "new_install_prompt_erase": true,
+  "builds": [{
+    "chipFamily": "ESP32-S3",
+    "parts": [{
+      "path": "roon_knob_merged-v2.5.2.bin?sha=de45a6fa4fea7e2da85aae1a02bbfec17ee4bfe550673e9e76755e77abcb79b2",
+      "offset": 0
+    }]
+  }]
+}
