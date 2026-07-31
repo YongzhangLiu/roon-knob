@@ -48,6 +48,13 @@ The dependency rules are:
    NVS namespace, blob, settings, or bonds.
 7. Target composition roots are the only layer that assembles display, input,
    BLE, power, provisioning, controller, and backend adapters.
+8. Privileged system actions have no semantic or generic physical dispatch
+   path and no common handler-registration API. They execute only through the
+   target-local Frame input adapter after the actual profile resolves both a
+   safety-locked descriptor and a safety-locked binding.
+9. Wi-Fi manager startup and provisioning readiness are distinct. A Frame BOOT
+   request remains in the retrying safety latch until ESP Wi-Fi can accept the
+   STA-to-AP transition.
 
 ## Observed graph and API disposition
 
@@ -55,8 +62,9 @@ The first two seams are useful but transitional:
 
 | Surface | Disposition | Reason |
 |---|---|---|
-| `controller_input_post_action` and UI queue dispatch | retained | Cross-task input must be serialized before network or presentation work |
-| Current `controller_input_action_t` names | transitional | They mix physical input and already-bound command meaning; #194 owns configurable bindings |
+| `controller_input_post_control` and UI/controller queue dispatch | retained | Cross-task semantic input is resolved and effects run on the target actor |
+| Pointer-free physical events, copied interaction context, and semantic actions | retained | Drivers, contextual defaults, and effects now have distinct values; #194 later adds persisted/runtime bindings |
+| `controller_action_router` picker effects | transitional | It owns current semantic picker behavior without renderer visibility queries; adaptive actions remain #170/#194 Slice C |
 | `controller_presentation` target selection | retained | Link-time Dial/Frame adapters remove renderer conditionals from shared controller code |
 | Zone-picker visibility, scrolling, and selected-ID queries | transitional | They model the current imperative picker, not the future semantic adaptive view |
 | Dial LVGL and Frame e-ink implementations | target-owned | Pixel layout, refresh cadence, and target state remain outside the controller |
@@ -97,19 +105,28 @@ slices may strengthen the check after the source graph is split. External
 angle-bracket includes, preprocessor condition semantics, symbols, and runtime
 calls remain outside this source-include contract.
 
-Because stacked PRs target their predecessor rather than `master`, the current
-workflow branch filter does not execute on every intermediate stack PR. Local
-evidence is required while stacked; the final rebased merge candidate must run
-this full workflow against `master` and pass before merge.
+Stacked PRs target their predecessor rather than `master`, so the workflow runs
+for pull requests to every branch. Ordinary test/build jobs have read-only
+repository access; write permission remains scoped to release, preview, and
+Pages jobs. The final rebased merge candidate must still run the full workflow
+against `master` and pass before merge.
 
 ## Characterization boundary
 
 Native tests freeze externally useful semantics:
 
-- input handler registration and unset-handler safety;
-- rejection of `CONTROLLER_INPUT_NONE`;
-- UI queue FIFO order, effective capacity, full-queue failure, and reentrant
-  posting;
+- physical event/context resolution through the actual Dial and Frame profiles;
+- rejection of unknown gesture/flag/value combinations and forged or unlocked
+  privileged system actions;
+- semantic BLE/control-intent behavior in media, picker, and
+  settings/recovery contexts;
+- rejection of invalid, unbound, and unsupported adaptive values;
+- UI queue FIFO order, effective capacity, and full-queue failure;
+- retrying Frame safety latches, including provisioning before Wi-Fi readiness;
+- the actual Frame system adapter rejecting generic ingress, propagating
+  pre-ready failure, and executing only locked BOOT/GP4 profile actions;
+- explicit picker open/scroll/select/close/settings effects and context
+  transitions;
 - Dial and Frame presentation adapters forwarding semantic values to their
   target renderer;
 - intentional target differences, such as Dial ignoring `line3` and Frame's

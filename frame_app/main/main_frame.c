@@ -173,6 +173,9 @@ void app_main(void) {
   ESP_LOGI(TAG, "Initializing UI...");
   eink_ui_init();
 
+  // Install the controller action handler before the input/UI actor starts.
+  app_controller_init();
+
   // Initialize button input
   platform_input_init();
 

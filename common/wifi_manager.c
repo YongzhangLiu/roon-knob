@@ -80,6 +80,8 @@ static esp_netif_t *s_ap_netif;
 static esp_timer_handle_t s_retry_timer;
 static size_t s_backoff_idx;
 static bool s_started;
+/* True only after ESP WiFi can accept a provisioning mode transition. */
+static bool s_provisioning_ready;
 static char s_ip[16];
 static bool s_ap_mode;           // true when in AP provisioning mode
 static int s_sta_fail_count;     // consecutive STA connection failures
@@ -401,6 +403,7 @@ static void start_ap_mode(void) {
     // Mark the transition before stopping STA. esp_wifi_stop() can emit a
     // disconnect event synchronously; the event handler must not schedule
     // another retry/AP transition while this one is in progress.
+    s_provisioning_ready = false;
     s_ap_mode = true;
     esp_wifi_stop();
 
@@ -428,6 +431,7 @@ static void start_ap_mode(void) {
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
     ESP_ERROR_CHECK(esp_wifi_start());
+    s_provisioning_ready = true;
 
     // Use maximum TX power in AP mode for better discoverability
     // (We reduce power in STA mode for battery, but setup needs visibility)
@@ -448,18 +452,20 @@ static void start_ap_mode(void) {
     rk_net_evt_cb(RK_NET_EVT_AP_STARTED, "192.168.4.1");
 }
 
-void wifi_mgr_start_provisioning(void) {
-    if (!s_started) {
-        ESP_LOGW(TAG, "Provisioning requested before WiFi manager start");
-        return;
+bool wifi_mgr_start_provisioning(void) {
+    if (!s_started || !s_provisioning_ready) {
+        ESP_LOGW(TAG, "Provisioning requested before WiFi manager is ready");
+        return false;
     }
     start_ap_mode();
+    return true;
 }
 
 void wifi_mgr_start(void) {
     if (s_started) {
         return;
     }
+    s_provisioning_ready = false;
     s_started = true;
 
     ensure_cfg_loaded();
@@ -467,11 +473,13 @@ void wifi_mgr_start(void) {
     esp_err_t err = esp_netif_init();
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         ESP_LOGE(TAG, "esp_netif_init failed: %s", esp_err_to_name(err));
+        s_started = false;
         return;
     }
     err = esp_event_loop_create_default();
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         ESP_LOGE(TAG, "event loop init failed: %s", esp_err_to_name(err));
+        s_started = false;
         return;
     }
     if (!s_sta_netif) {
@@ -503,6 +511,7 @@ void wifi_mgr_start(void) {
     ESP_ERROR_CHECK(esp_timer_create(&retry_args, &s_retry_timer));
 
     ESP_ERROR_CHECK(esp_wifi_start());
+    s_provisioning_ready = true;
 
     // Reduce WiFi TX power for battery operation (11 dBm instead of 20 dBm)
     // This reduces peak current from ~500mA to ~200mA during WiFi transmission
@@ -556,6 +565,7 @@ void wifi_mgr_forget_wifi(void) {
     ESP_LOGW(TAG, "Factory reset requested - erasing NVS and rebooting");
 
     // Stop WiFi first
+    s_provisioning_ready = false;
     if (s_started) {
         esp_wifi_stop();
     }
@@ -611,6 +621,7 @@ int wifi_mgr_get_retry_max(void) {
 }
 
 void wifi_mgr_stop(void) {
+    s_provisioning_ready = false;
     if (!s_started) {
         return;
     }
@@ -656,6 +667,7 @@ void wifi_mgr_stop_ap(void) {
     captive_portal_stop();
 
     // Stop AP
+    s_provisioning_ready = false;
     esp_wifi_stop();
 
     // Switch to STA mode. Clear the transition flag before start so the
@@ -667,6 +679,7 @@ void wifi_mgr_stop_ap(void) {
     sync_active_wifi(&s_cfg);
     s_ip[0] = '\0';
     ESP_ERROR_CHECK(esp_wifi_start());
+    s_provisioning_ready = true;
 
     rk_net_evt_cb(RK_NET_EVT_AP_STOPPED, NULL);
 

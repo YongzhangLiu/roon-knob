@@ -24,7 +24,7 @@ void wifi_mgr_forget_wifi(void);             // clears this device's configurati
 bool wifi_mgr_get_ip(char *buf, size_t n);   // "a.b.c.d"
 void wifi_mgr_get_ssid(char *buf, size_t n);
 bool wifi_mgr_is_ap_mode(void);              // true if in AP provisioning mode
-void wifi_mgr_start_provisioning(void);       // switch explicitly to setup AP mode
+bool wifi_mgr_start_provisioning(void);       // true only when setup AP mode can start
 const char *wifi_mgr_get_hostname(void);     // get device hostname (for mDNS, logs)
 void wifi_mgr_stop_ap(void);                 // stop AP mode, attempt STA connection
 const char *wifi_mgr_get_last_error(void);   // get last disconnect reason string

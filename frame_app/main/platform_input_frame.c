@@ -4,14 +4,14 @@
 // PWR  (GPIO5): unused
 
 #include "platform/platform_input.h"
-#include "wifi_manager.h"
+#include "controller_input.h"
+#include "controller_input_mailbox.h"
+#include "controller_system_frame.h"
 
 #include <driver/gpio.h>
 #include <esp_log.h>
-#include <esp_system.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
-#include <freertos/queue.h>
 
 static const char *TAG = "input";
 
@@ -20,16 +20,12 @@ static const char *TAG = "input";
 #define PWR_PIN   5
 
 #define LONG_PRESS_MS 1000
-#define DEBOUNCE_MS   50
-
-static QueueHandle_t s_event_queue = NULL;
 static esp_timer_handle_t s_btn_poll_timer = NULL;
+static portMUX_TYPE s_latch_lock = portMUX_INITIALIZER_UNLOCKED;
+static controller_input_safety_latch_t s_safety_latch;
 
-typedef enum {
-    FRAME_INPUT_NONE = 0,
-    FRAME_INPUT_START_PROVISIONING,
-    FRAME_INPUT_RESTART,
-} frame_input_event_t;
+#define FRAME_PENDING_PROVISIONING (1u << 0)
+#define FRAME_PENDING_RESTART      (1u << 1)
 
 // Button state tracking
 typedef struct {
@@ -48,9 +44,27 @@ static bool is_pressed(button_state_t *btn) {
     return btn->active_low ? (level == 0) : (level == 1);
 }
 
-static void poll_button(button_state_t *btn,
-                        frame_input_event_t short_evt,
-                        frame_input_event_t long_evt) {
+static void offer_safety_action(uint32_t bit) {
+    taskENTER_CRITICAL(&s_latch_lock);
+    (void)controller_input_safety_latch_offer(&s_safety_latch, bit);
+    taskEXIT_CRITICAL(&s_latch_lock);
+}
+
+static bool take_safety_action(uint32_t bit) {
+    taskENTER_CRITICAL(&s_latch_lock);
+    bool pending =
+        controller_input_safety_latch_take(&s_safety_latch, bit);
+    taskEXIT_CRITICAL(&s_latch_lock);
+    return pending;
+}
+
+static void retry_safety_action(uint32_t bit) {
+    taskENTER_CRITICAL(&s_latch_lock);
+    controller_input_safety_latch_retry(&s_safety_latch, bit);
+    taskEXIT_CRITICAL(&s_latch_lock);
+}
+
+static void poll_button(button_state_t *btn, uint32_t long_press_bit) {
     bool now_pressed = is_pressed(btn);
     uint64_t now = esp_timer_get_time() / 1000;  // ms
 
@@ -62,10 +76,12 @@ static void poll_button(button_state_t *btn,
         // Button released
         btn->pressed = false;
         uint64_t held = now - btn->press_time;
-        if (held >= LONG_PRESS_MS && long_evt != FRAME_INPUT_NONE) {
-            if (s_event_queue) xQueueSend(s_event_queue, &long_evt, 0);
-        } else if (held >= DEBOUNCE_MS && short_evt != FRAME_INPUT_NONE) {
-            if (s_event_queue) xQueueSend(s_event_queue, &short_evt, 0);
+        if (held >= LONG_PRESS_MS && long_press_bit != 0) {
+            /*
+             * Idempotent safety latches cannot overflow. A failed controller
+             * dispatch is re-armed by the UI actor and retried.
+             */
+            offer_safety_action(long_press_bit);
         }
     }
 }
@@ -76,11 +92,11 @@ static volatile bool s_restart_pending = false;
 static void button_poll_cb(void *arg) {
     (void)arg;
     // BOOT: long press only = WiFi AP setup
-    poll_button(&s_boot, FRAME_INPUT_NONE, FRAME_INPUT_START_PROVISIONING);
+    poll_button(&s_boot, FRAME_PENDING_PROVISIONING);
     // GP4/PWR: poll_button updates internal press state (press_time, pressed)
     // needed by the long-press restart check below, even though no events are enqueued
-    poll_button(&s_gp4, FRAME_INPUT_NONE, FRAME_INPUT_NONE);
-    poll_button(&s_pwr, FRAME_INPUT_NONE, FRAME_INPUT_NONE);
+    poll_button(&s_gp4, 0);
+    poll_button(&s_pwr, 0);
 
     // Check GP4 for restart (long press detection directly)
     bool gp4_pressed = is_pressed(&s_gp4);
@@ -88,14 +104,20 @@ static void button_poll_cb(void *arg) {
         uint64_t held = (esp_timer_get_time() / 1000) - s_gp4.press_time;
         if (held >= LONG_PRESS_MS && !s_restart_pending) {
             s_restart_pending = true;
-            frame_input_event_t evt = FRAME_INPUT_RESTART;
-            if (s_event_queue) xQueueSend(s_event_queue, &evt, 0);
+            offer_safety_action(FRAME_PENDING_RESTART);
         }
     }
 }
 
 void platform_input_init(void) {
-    s_event_queue = xQueueCreate(8, sizeof(frame_input_event_t));
+    taskENTER_CRITICAL(&s_latch_lock);
+    controller_input_safety_latch_reset(&s_safety_latch);
+    taskEXIT_CRITICAL(&s_latch_lock);
+    s_restart_pending = false;
+    s_boot = (button_state_t){BOOT_PIN, 1, 0, false};
+    s_gp4 = (button_state_t){GP4_PIN, 1, 0, false};
+    s_pwr = (button_state_t){PWR_PIN, 0, 0, false};
+    controller_system_frame_init();
 
     // Active-low buttons (BOOT, GP4): pull-up, read 0 when pressed
     gpio_config_t io_conf = {
@@ -138,22 +160,41 @@ void platform_input_init(void) {
 }
 
 void platform_input_process_events(void) {
-    frame_input_event_t evt;
-    while (s_event_queue && xQueueReceive(s_event_queue, &evt, 0) == pdTRUE) {
-        ESP_LOGI(TAG, "Input event: %d", evt);
-        switch (evt) {
-        case FRAME_INPUT_START_PROVISIONING:
-            ESP_LOGW(TAG, "BOOT long press — starting WiFi provisioning");
-            wifi_mgr_start_provisioning();
-            break;
-        case FRAME_INPUT_RESTART:
-            ESP_LOGW(TAG, "GP4 long press — restarting");
-            esp_restart();
-            break;
-        default:
-            break;
+    if (take_safety_action(FRAME_PENDING_PROVISIONING)) {
+        controller_physical_event_t event = {
+            .source_id = CONTROLLER_INPUT_SOURCE_FRAME_BUTTONS,
+            .control_id = CONTROLLER_INPUT_CONTROL_FRAME_BOOT,
+            .kind = CONTROLLER_PHYSICAL_EVENT_BUTTON,
+            .gesture = CONTROLLER_PHYSICAL_GESTURE_HOLD,
+            .value = 1,
+            .sequence = 0,
+            .flags = CONTROLLER_PHYSICAL_EVENT_FLAG_NONE,
+        };
+        if (!controller_system_frame_dispatch_physical(&event)) {
+            retry_safety_action(FRAME_PENDING_PROVISIONING);
         }
     }
+    if (take_safety_action(FRAME_PENDING_RESTART)) {
+        controller_physical_event_t event = {
+            .source_id = CONTROLLER_INPUT_SOURCE_FRAME_BUTTONS,
+            .control_id = CONTROLLER_INPUT_CONTROL_FRAME_GP4,
+            .kind = CONTROLLER_PHYSICAL_EVENT_BUTTON,
+            .gesture = CONTROLLER_PHYSICAL_GESTURE_HOLD,
+            .value = 1,
+            .sequence = 0,
+            .flags = CONTROLLER_PHYSICAL_EVENT_FLAG_NONE,
+        };
+        if (!controller_system_frame_dispatch_physical(&event)) {
+            retry_safety_action(FRAME_PENDING_RESTART);
+        }
+    }
+}
+
+controller_input_mailbox_stats_t platform_input_mailbox_stats(void) {
+    taskENTER_CRITICAL(&s_latch_lock);
+    controller_input_mailbox_stats_t stats = s_safety_latch.stats;
+    taskEXIT_CRITICAL(&s_latch_lock);
+    return stats;
 }
 
 void platform_input_shutdown(void) {
@@ -162,8 +203,8 @@ void platform_input_shutdown(void) {
         esp_timer_delete(s_btn_poll_timer);
         s_btn_poll_timer = NULL;
     }
-    if (s_event_queue) {
-        vQueueDelete(s_event_queue);
-        s_event_queue = NULL;
-    }
+    controller_system_frame_shutdown();
+    taskENTER_CRITICAL(&s_latch_lock);
+    controller_input_safety_latch_reset(&s_safety_latch);
+    taskEXIT_CRITICAL(&s_latch_lock);
 }

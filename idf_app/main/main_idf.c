@@ -321,6 +321,9 @@ void app_main(void) {
     ESP_LOGI(TAG, "Initializing UI...");
     ui_init();
 
+    // Install the controller action handler before input can be processed.
+    app_controller_init();
+
     // Initialize input (rotary encoder)
     platform_input_init();
 

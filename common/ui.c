@@ -546,38 +546,50 @@ static void zone_label_event_cb(lv_event_t *e) {
         s_zone_long_pressed = false;
         return;
     }
-    controller_input_dispatch_action(CONTROLLER_INPUT_MENU);
+    controller_action_t action = controller_action_simple(
+        CONTROLLER_ACTION_OPEN_ZONE_PICKER);
+    (void)controller_input_dispatch_action(&action);
 }
 
 static void zone_label_long_press_cb(lv_event_t *e) {
     (void)e;
     s_zone_long_pressed = true;  // Mark that we handled a long press
-    ui_show_settings();
+    controller_action_t action = controller_action_simple(
+        CONTROLLER_ACTION_SHOW_SETTINGS);
+    (void)controller_input_dispatch_action(&action);
 }
 
 static void btn_prev_event_cb(lv_event_t *e) {
     (void)e;
     ESP_LOGI(UI_TAG, "btn_prev_event_cb triggered");
-    controller_input_dispatch_action(CONTROLLER_INPUT_PREV_TRACK);
+    controller_action_t action = controller_action_command(
+        controller_command_make(CONTROLLER_COMMAND_PREVIOUS_TRACK));
+    (void)controller_input_dispatch_action(&action);
 }
 
 static void btn_play_event_cb(lv_event_t *e) {
     (void)e;
     ESP_LOGI(UI_TAG, "btn_play_event_cb triggered");
-    controller_input_dispatch_action(CONTROLLER_INPUT_PLAY_PAUSE);
+    controller_action_t action = controller_action_command(
+        controller_command_make(CONTROLLER_COMMAND_TOGGLE_PLAYBACK));
+    (void)controller_input_dispatch_action(&action);
 }
 
 static void btn_next_event_cb(lv_event_t *e) {
     (void)e;
     ESP_LOGI(UI_TAG, "btn_next_event_cb triggered");
-    controller_input_dispatch_action(CONTROLLER_INPUT_NEXT_TRACK);
+    controller_action_t action = controller_action_command(
+        controller_command_make(CONTROLLER_COMMAND_NEXT_TRACK));
+    (void)controller_input_dispatch_action(&action);
 }
 
 static void zone_list_item_event_cb(lv_event_t *e) {
     lv_obj_t *btn = lv_event_get_target(e);
     int index = (int)(intptr_t)lv_obj_get_user_data(btn);
     s_zone_picker_selected = index;
-    controller_input_dispatch_action(CONTROLLER_INPUT_PLAY_PAUSE);  // Trigger zone selection
+    controller_action_t action = controller_action_simple(
+        CONTROLLER_ACTION_SELECT_ZONE_PICKER);
+    (void)controller_input_dispatch_action(&action);
 }
 
 // ============================================================================

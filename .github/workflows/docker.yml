@@ -5,10 +5,10 @@ on:
     branches: [master, main]
     tags: ['v*']
   pull_request:
-    branches: [master, main]
+    branches: ['**']
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -28,13 +28,59 @@ jobs:
           python3 scripts/check_dial_identity.py
           python3 scripts/check_controller_dependencies.py
           python3 scripts/check_controller_dependencies.py --self-test
-          cc -std=c11 -Wall -Wextra -Werror -pthread \
+          cc -std=c11 -Wall -Wextra -Werror -pedantic -pthread \
             -Icommon -Iinclude \
             tests/test_controller_input.c \
             common/controller_input.c \
             common/platform/platform_task.c \
             -o /tmp/test-controller-input
           /tmp/test-controller-input
+          cc -std=c11 -Wall -Wextra -Werror -pedantic \
+            -Icommon \
+            tests/test_controller_input_mailbox.c \
+            common/controller_input_mailbox.c \
+            -o /tmp/test-controller-input-mailbox
+          /tmp/test-controller-input-mailbox
+          cc -std=c11 -Wall -Wextra -Werror -pedantic \
+            -DTEST_DIAL_PROFILE \
+            -Icommon \
+            tests/test_controller_input_profile.c \
+            idf_app/main/controller_input_profile_dial.c \
+            -o /tmp/test-controller-input-profile-dial
+          /tmp/test-controller-input-profile-dial
+          cc -std=c11 -Wall -Wextra -Werror -pedantic \
+            -DTEST_FRAME_PROFILE \
+            -Icommon \
+            tests/test_controller_input_profile.c \
+            frame_app/main/controller_input_profile_frame.c \
+            -o /tmp/test-controller-input-profile-frame
+          /tmp/test-controller-input-profile-frame
+          cc -std=c11 -Wall -Wextra -Werror -pedantic \
+            -DTEST_DIAL_PROFILE \
+            -Icommon -Iinclude \
+            tests/test_controller_input_profile_resolution.c \
+            common/controller_input.c \
+            idf_app/main/controller_input_profile_dial.c \
+            -o /tmp/test-controller-input-profile-resolution-dial
+          /tmp/test-controller-input-profile-resolution-dial
+          cc -std=c11 -Wall -Wextra -Werror -pedantic \
+            -DTEST_FRAME_PROFILE \
+            -Icommon -Iinclude \
+            tests/test_controller_input_profile_resolution.c \
+            common/controller_input.c \
+            frame_app/main/controller_input_profile_frame.c \
+            -o /tmp/test-controller-input-profile-resolution-frame
+          /tmp/test-controller-input-profile-resolution-frame
+          cc -std=c11 -Wall -Wextra -Werror -pedantic \
+            -DCONTROLLER_SYSTEM_FRAME_TEST \
+            -Icommon -Iinclude -Iframe_app/main \
+            tests/test_controller_system_frame.c \
+            common/controller_input.c \
+            common/controller_input_mailbox.c \
+            frame_app/main/controller_input_profile_frame.c \
+            frame_app/main/controller_system_frame.c \
+            -o /tmp/test-controller-system-frame
+          /tmp/test-controller-system-frame
           cc -std=c11 -Wall -Wextra -Werror \
             -Icommon -Iinclude \
             tests/test_controller_presentation_dial.c \
@@ -56,10 +102,95 @@ jobs:
           /tmp/test-controller-values
           cc -std=c11 -Wall -Wextra -Werror -pedantic \
             -Icommon -Iinclude \
-            tests/test_controller_legacy_binding.c \
-            common/controller_legacy_binding.c \
-            -o /tmp/test-controller-legacy-binding
-          /tmp/test-controller-legacy-binding
+            tests/test_controller_action_router.c \
+            common/controller_action_router.c \
+            common/controller_input.c \
+            -o /tmp/test-controller-action-router
+          /tmp/test-controller-action-router
+          cc -std=c11 -Wall -Wextra -Werror -pedantic -pthread \
+            -fsanitize=address,undefined -fno-omit-frame-pointer \
+            -Icommon -Iinclude \
+            tests/test_controller_input.c \
+            common/controller_input.c \
+            common/platform/platform_task.c \
+            -o /tmp/test-controller-input-sanitized
+          ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
+            UBSAN_OPTIONS=halt_on_error=1 \
+            /tmp/test-controller-input-sanitized
+          cc -std=c11 -Wall -Wextra -Werror -pedantic \
+            -fsanitize=address,undefined -fno-omit-frame-pointer \
+            -Icommon \
+            tests/test_controller_input_mailbox.c \
+            common/controller_input_mailbox.c \
+            -o /tmp/test-controller-input-mailbox-sanitized
+          ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
+            UBSAN_OPTIONS=halt_on_error=1 \
+            /tmp/test-controller-input-mailbox-sanitized
+          cc -std=c11 -Wall -Wextra -Werror -pedantic \
+            -fsanitize=address,undefined -fno-omit-frame-pointer \
+            -DTEST_DIAL_PROFILE \
+            -Icommon \
+            tests/test_controller_input_profile.c \
+            idf_app/main/controller_input_profile_dial.c \
+            -o /tmp/test-controller-input-profile-dial-sanitized
+          ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
+            UBSAN_OPTIONS=halt_on_error=1 \
+            /tmp/test-controller-input-profile-dial-sanitized
+          cc -std=c11 -Wall -Wextra -Werror -pedantic \
+            -fsanitize=address,undefined -fno-omit-frame-pointer \
+            -DTEST_FRAME_PROFILE \
+            -Icommon \
+            tests/test_controller_input_profile.c \
+            frame_app/main/controller_input_profile_frame.c \
+            -o /tmp/test-controller-input-profile-frame-sanitized
+          ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
+            UBSAN_OPTIONS=halt_on_error=1 \
+            /tmp/test-controller-input-profile-frame-sanitized
+          cc -std=c11 -Wall -Wextra -Werror -pedantic \
+            -fsanitize=address,undefined -fno-omit-frame-pointer \
+            -DTEST_DIAL_PROFILE \
+            -Icommon -Iinclude \
+            tests/test_controller_input_profile_resolution.c \
+            common/controller_input.c \
+            idf_app/main/controller_input_profile_dial.c \
+            -o /tmp/test-controller-input-profile-resolution-dial-sanitized
+          ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
+            UBSAN_OPTIONS=halt_on_error=1 \
+            /tmp/test-controller-input-profile-resolution-dial-sanitized
+          cc -std=c11 -Wall -Wextra -Werror -pedantic \
+            -fsanitize=address,undefined -fno-omit-frame-pointer \
+            -DTEST_FRAME_PROFILE \
+            -Icommon -Iinclude \
+            tests/test_controller_input_profile_resolution.c \
+            common/controller_input.c \
+            frame_app/main/controller_input_profile_frame.c \
+            -o /tmp/test-controller-input-profile-resolution-frame-sanitized
+          ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
+            UBSAN_OPTIONS=halt_on_error=1 \
+            /tmp/test-controller-input-profile-resolution-frame-sanitized
+          cc -std=c11 -Wall -Wextra -Werror -pedantic \
+            -fsanitize=address,undefined -fno-omit-frame-pointer \
+            -DCONTROLLER_SYSTEM_FRAME_TEST \
+            -Icommon -Iinclude -Iframe_app/main \
+            tests/test_controller_system_frame.c \
+            common/controller_input.c \
+            common/controller_input_mailbox.c \
+            frame_app/main/controller_input_profile_frame.c \
+            frame_app/main/controller_system_frame.c \
+            -o /tmp/test-controller-system-frame-sanitized
+          ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
+            UBSAN_OPTIONS=halt_on_error=1 \
+            /tmp/test-controller-system-frame-sanitized
+          cc -std=c11 -Wall -Wextra -Werror -pedantic \
+            -fsanitize=address,undefined -fno-omit-frame-pointer \
+            -Icommon -Iinclude \
+            tests/test_controller_action_router.c \
+            common/controller_action_router.c \
+            common/controller_input.c \
+            -o /tmp/test-controller-action-router-sanitized
+          ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
+            UBSAN_OPTIONS=halt_on_error=1 \
+            /tmp/test-controller-action-router-sanitized
           cc -std=c11 -Wall -Wextra -Werror -pedantic \
             -Icommon \
             tests/test_bridge_command_plan.c \
@@ -105,7 +236,7 @@ jobs:
           else
             VERSION=$(grep 'set(PROJECT_VER' idf_app/CMakeLists.txt | sed 's/.*"\(.*\)".*/\1/')
           fi
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Building firmware version: $VERSION"
 
       - name: Inject version into CMakeLists.txt
@@ -286,6 +417,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: [test-shared, build-idf, build-frame, build-ble-off]
     if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v6
         with:
@@ -305,7 +438,7 @@ jobs:
 
       - name: Get version from tag
         id: version
-        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
 
       - name: Get release notes from draft
         id: notes
@@ -372,8 +505,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          RELEASE_EXISTS=$(gh release view ${{ github.ref_name }} --json assets --jq '.assets | length' 2>/dev/null || echo "0")
-          echo "existing_assets=$RELEASE_EXISTS" >> $GITHUB_OUTPUT
+          RELEASE_EXISTS=$(gh release view "${{ github.ref_name }}" --json assets --jq '.assets | length' 2>/dev/null || echo "0")
+          echo "existing_assets=$RELEASE_EXISTS" >> "$GITHUB_OUTPUT"
           if [ "$RELEASE_EXISTS" -gt "0" ]; then
             echo "Release already exists with $RELEASE_EXISTS assets, will only upload missing files"
           fi
