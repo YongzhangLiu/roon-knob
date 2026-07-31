@@ -734,6 +734,7 @@ jobs:
           keep_files: true
 
       - name: Verify deployed preview
+        id: verify-preview
         env:
           PR_NUM: ${{ github.event.pull_request.number }}
           PREVIEW_ID: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -820,10 +821,29 @@ jobs:
           cmp "deployed-preview/${DIAL_FIRMWARE_FILE}" \
             "deployed-preview/${DIAL_LEGACY_FIRMWARE_FILE}"
 
+          {
+            echo "dial_manifest_url=${PREVIEW_BASE}/${DIAL_MANIFEST_FILE}"
+            echo "frame_manifest_url=${PREVIEW_BASE}/${FRAME_MANIFEST_FILE}"
+            echo "dial_firmware_url=${PREVIEW_BASE}/${DIAL_FIRMWARE_FILE}"
+            echo "frame_firmware_url=${PREVIEW_BASE}/${FRAME_FIRMWARE_FILE}"
+            echo "dial_firmware_sha256=$(sha256sum "deployed-preview/${DIAL_FIRMWARE_FILE}" | awk '{print $1}')"
+            echo "frame_firmware_sha256=$(sha256sum "deployed-preview/${FRAME_FIRMWARE_FILE}" | awk '{print $1}')"
+            echo "dial_firmware_bytes=$(stat --format=%s "deployed-preview/${DIAL_FIRMWARE_FILE}")"
+            echo "frame_firmware_bytes=$(stat --format=%s "deployed-preview/${FRAME_FIRMWARE_FILE}")"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Post preview URL to PR
         uses: actions/github-script@v8
         env:
           PREVIEW_ID: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          DIAL_MANIFEST_URL: ${{ steps.verify-preview.outputs.dial_manifest_url }}
+          FRAME_MANIFEST_URL: ${{ steps.verify-preview.outputs.frame_manifest_url }}
+          DIAL_FIRMWARE_URL: ${{ steps.verify-preview.outputs.dial_firmware_url }}
+          FRAME_FIRMWARE_URL: ${{ steps.verify-preview.outputs.frame_firmware_url }}
+          DIAL_FIRMWARE_SHA256: ${{ steps.verify-preview.outputs.dial_firmware_sha256 }}
+          FRAME_FIRMWARE_SHA256: ${{ steps.verify-preview.outputs.frame_firmware_sha256 }}
+          DIAL_FIRMWARE_BYTES: ${{ steps.verify-preview.outputs.dial_firmware_bytes }}
+          FRAME_FIRMWARE_BYTES: ${{ steps.verify-preview.outputs.frame_firmware_bytes }}
         with:
           script: |
             const prNumber = context.payload.pull_request.number;
@@ -831,6 +851,10 @@ jobs:
             const combinedUrl = `${previewBase}/flash-${process.env.PREVIEW_ID}.html`;
             const dialUrl = `${previewBase}/flash-dial-${process.env.PREVIEW_ID}.html`;
             const frameUrl = `${previewBase}/flash-frame-${process.env.PREVIEW_ID}.html`;
+            const dialManifestUrl = process.env.DIAL_MANIFEST_URL;
+            const frameManifestUrl = process.env.FRAME_MANIFEST_URL;
+            const dialFirmwareUrl = process.env.DIAL_FIRMWARE_URL;
+            const frameFirmwareUrl = process.env.FRAME_FIRMWARE_URL;
 
             // Check if we already posted a comment
             const comments = await github.rest.issues.listComments({
@@ -848,6 +872,15 @@ jobs:
             - [Flash HiPhi Dial](${dialUrl})
             - [Flash HiPhi Frame](${frameUrl})
             - [Show both targets](${combinedUrl})
+
+            ### Exact-artifact provenance
+
+            - Dial: [flash page](${dialUrl}) · [manifest](${dialManifestUrl}) · [merged binary](${dialFirmwareUrl})
+              — \`${process.env.DIAL_FIRMWARE_SHA256}\` (${process.env.DIAL_FIRMWARE_BYTES} bytes)
+            - Frame: [flash page](${frameUrl}) · [manifest](${frameManifestUrl}) · [merged binary](${frameFirmwareUrl})
+              — \`${process.env.FRAME_FIRMWARE_SHA256}\` (${process.env.FRAME_FIRMWARE_BYTES} bytes)
+
+            Each deployed binary is byte-for-byte identical to its GitHub Actions artifact. The linked HTML pages, manifests, and binaries returned HTTP 200 during deployment verification. Hardware testing remains the active gate; no merge is authorized.
 
             _Updated: ${new Date().toISOString()}_`;
 
