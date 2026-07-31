@@ -1,14 +1,13 @@
 #pragma once
 
 #include "controller_command.h"
-#include "rk_cfg.h"
-
 #include <stdbool.h>
 #include <stddef.h>
 
 #define BRIDGE_CLIENT_MAX_ZONES 64
 
-void bridge_client_start(const rk_cfg_t *cfg);
+/* Reads the already-published controller configuration snapshot. */
+void bridge_client_start(void);
 bool bridge_client_execute_command(const controller_command_t *command);
 void bridge_client_set_network_ready(bool ready);
 const char* bridge_client_get_artwork_url(char *url_buf, size_t buf_len, int width, int height);
@@ -57,15 +56,3 @@ bool bridge_client_visit_zones(bridge_zone_list_visitor_t visitor, void *ctx);
 bridge_zone_selection_result_t bridge_client_select_zone_value(
     const char *zone_id);
 bool bridge_client_set_zone(const char *zone_id);
-
-/**
- * Atomically update and persist only this device's local WiFi fields while
- * preserving the controller/bridge configuration held by the running device.
- */
-bool bridge_client_store_local_connectivity(const rk_cfg_t *local_cfg);
-
-/**
- * Atomically update and persist the controller bridge endpoint while
- * preserving this device's connectivity and the remaining controller state.
- */
-bool bridge_client_store_bridge_base(const char *bridge_base, bool from_mdns);

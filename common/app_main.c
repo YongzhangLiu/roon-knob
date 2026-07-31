@@ -2,9 +2,8 @@
 
 #include "platform/platform_log.h"
 #include "platform/platform_mdns.h"
-#include "platform/platform_storage.h"
-#include "rk_cfg.h"
 #include "bridge_client.h"
+#include "controller_config.h"
 #include "controller_action_router.h"
 #include "controller_input.h"
 
@@ -23,15 +22,18 @@ void app_controller_init(void) {
 }
 
 void app_entry(void) {
-    rk_cfg_t cfg = {0};
-    bool valid = platform_storage_load(&cfg) && rk_cfg_is_valid(&cfg);
-    if (!valid) {
-        LOGI("config missing - applying defaults");
-        platform_storage_defaults(&cfg);
-        platform_storage_save(&cfg);
+    if (!controller_config_init()) {
+        LOGE("configuration owner initialization failed");
+        return;
+    }
+
+    controller_config_snapshot_t config = {0};
+    if (!controller_config_snapshot(&config)) {
+        LOGE("configuration owner did not publish a startup snapshot");
+        return;
     }
 
     // Note: mDNS init moved to after WiFi connects (in main_idf.c)
     app_controller_init();
-    bridge_client_start(&cfg);
+    bridge_client_start();
 }

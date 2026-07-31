@@ -7,7 +7,8 @@
 #include <string.h>
 
 #include "platform/platform_http.h"
-#include "platform/platform_storage.h"
+#include "controller_config.h"
+#include "controller_presentation.h"
 #include "wifi_manager.h"
 #include "ota_update.h"
 #include "bridge_client.h"
@@ -155,20 +156,24 @@ static void show_reset_confirm_dialog(void) {
 }
 
 static void refresh_labels(void) {
-    rk_cfg_t cfg = {0};
-    platform_storage_load(&cfg);
+    controller_config_snapshot_t snapshot = {0};
+    if (!controller_config_snapshot(&snapshot)) {
+        set_status_text("Settings unavailable");
+        return;
+    }
+    const rk_cfg_t *cfg = &snapshot.value;
 
     if (s_widgets.name_value) {
-        if (cfg.knob_name[0]) {
-            lv_label_set_text_fmt(s_widgets.name_value, "%s", cfg.knob_name);
+        if (cfg->knob_name[0]) {
+            lv_label_set_text_fmt(s_widgets.name_value, "%s", cfg->knob_name);
         } else {
             lv_label_set_text_fmt(s_widgets.name_value, "%s", wifi_mgr_get_hostname());
         }
     }
 
     if (s_widgets.ssid_value) {
-        if (cfg.ssid[0]) {
-            lv_label_set_text_fmt(s_widgets.ssid_value, "%s", cfg.ssid);
+        if (cfg->ssid[0]) {
+            lv_label_set_text_fmt(s_widgets.ssid_value, "%s", cfg->ssid);
         } else {
             lv_label_set_text(s_widgets.ssid_value, "<unset>");
         }
@@ -212,10 +217,14 @@ static void factory_reset_cb(lv_event_t *e) {
 
 static void test_bridge_cb(lv_event_t *e) {
     (void)e;
-    rk_cfg_t cfg = {0};
-    platform_storage_load(&cfg);
+    controller_config_snapshot_t snapshot = {0};
+    if (!controller_config_snapshot(&snapshot)) {
+        set_status_text("Settings unavailable");
+        return;
+    }
+    const rk_cfg_t *cfg = &snapshot.value;
 
-    if (cfg.bridge_base[0] == '\0') {
+    if (cfg->bridge_base[0] == '\0') {
         set_status_text("No bridge URL");
         return;
     }
@@ -223,7 +232,7 @@ static void test_bridge_cb(lv_event_t *e) {
     set_status_text("Testing...");
 
     char url[256];
-    snprintf(url, sizeof(url), "%s/zones", cfg.bridge_base);
+    snprintf(url, sizeof(url), "%s/zones", cfg->bridge_base);
 
     char *response = NULL;
     size_t response_len = 0;
@@ -232,10 +241,10 @@ static void test_bridge_cb(lv_event_t *e) {
 
     if (result == 0 && response_len > 0) {
         set_status_text("Bridge OK!");
-        ESP_LOGI(TAG, "Bridge test passed: %s", cfg.bridge_base);
+        ESP_LOGI(TAG, "Bridge test passed: %s", cfg->bridge_base);
     } else {
         set_status_text("Bridge FAILED");
-        ESP_LOGW(TAG, "Bridge test failed: %s (error %d)", cfg.bridge_base, result);
+        ESP_LOGW(TAG, "Bridge test failed: %s (error %d)", cfg->bridge_base, result);
     }
 }
 
@@ -401,16 +410,16 @@ static void apply_evt_async(void *data) {
             if (ssid[0]) {
                 char buf[64];
                 snprintf(buf, sizeof(buf), "WiFi: %s...", ssid);
-                ui_set_network_status(buf);
+                controller_presentation_set_network_status(buf);
             } else {
-                ui_set_network_status("WiFi: Connecting...");
+                controller_presentation_set_network_status("WiFi: Connecting...");
             }
             break;
         case RK_NET_EVT_GOT_IP:
             set_status_text("Online");
             set_ip_text(msg->ip);
             // Clear main screen status on successful connection
-            ui_set_network_status(NULL);
+            controller_presentation_set_network_status(NULL);
             break;
         case RK_NET_EVT_FAIL:
             // Generic failure - show reason if provided
@@ -419,29 +428,29 @@ static void apply_evt_async(void *data) {
                 // Show on main screen
                 char buf[80];
                 snprintf(buf, sizeof(buf), "WiFi: %s", msg->ip);
-                ui_set_network_status(buf);
+                controller_presentation_set_network_status(buf);
             } else {
                 set_status_text("Retrying...");
-                ui_set_network_status("WiFi: Retrying...");
+                controller_presentation_set_network_status("WiFi: Retrying...");
             }
             break;
         case RK_NET_EVT_WRONG_PASSWORD:
             set_status_text("Wrong password");
-            ui_set_network_status("WiFi: Wrong password");
+            controller_presentation_set_network_status("WiFi: Wrong password");
             break;
         case RK_NET_EVT_NO_AP_FOUND:
             set_status_text("Network not found");
             if (ssid[0]) {
                 char buf[64];
                 snprintf(buf, sizeof(buf), "WiFi: '%s' not found", ssid);
-                ui_set_network_status(buf);
+                controller_presentation_set_network_status(buf);
             } else {
-                ui_set_network_status("WiFi: Network not found");
+                controller_presentation_set_network_status("WiFi: Network not found");
             }
             break;
         case RK_NET_EVT_AUTH_TIMEOUT:
             set_status_text("Auth timeout");
-            ui_set_network_status("WiFi: Auth timeout");
+            controller_presentation_set_network_status("WiFi: Auth timeout");
             break;
         case RK_NET_EVT_AP_STARTED:
             set_status_text("Setup: hiphi-dial-setup");
@@ -452,7 +461,7 @@ static void apply_evt_async(void *data) {
         case RK_NET_EVT_AP_STOPPED:
             set_status_text("Connecting...");
             set_ip_text("");
-            ui_set_network_status("WiFi: Connecting...");
+            controller_presentation_set_network_status("WiFi: Connecting...");
             break;
         default:
             break;

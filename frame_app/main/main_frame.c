@@ -4,6 +4,7 @@
 #include "app.h"
 #include "ble_hid_host_frame.h"
 #include "bridge_client.h"
+#include "controller_config.h"
 #include "captive_portal.h"
 #include "eink_display.h"
 #include "eink_ui.h"
@@ -11,7 +12,6 @@
 #include "platform/platform_http.h"
 #include "platform/platform_input.h"
 #include "platform/platform_mdns.h"
-#include "platform/platform_storage.h"
 #include "platform/platform_task.h"
 #include "platform/platform_time.h"
 #include "wifi_manager.h"
@@ -23,6 +23,7 @@
 #include <freertos/task.h>
 #include <nvs_flash.h>
 #include <stdio.h>
+#include <stdatomic.h>
 
 static const char *TAG = "main";
 
@@ -31,10 +32,42 @@ static const char *TAG = "main";
 // Deferred operations flags
 static volatile bool s_mdns_init_pending = false;
 static volatile bool s_ble_init_pending = false;
-static volatile bool s_sta_server_pending = false;
+/* The event loop produces this request; the e-ink UI task is the sole
+ * consumer and sole initiator of the STA settings server. */
+static atomic_bool s_sta_server_pending = ATOMIC_VAR_INIT(false);
 // Guard against double-init on WiFi reconnect
 static bool s_ble_initialized = false;
-static bool s_sta_server_initialized = false;
+
+static const char *config_durability_warning(void) {
+  controller_config_snapshot_t config = {0};
+  if (!controller_config_snapshot(&config)) {
+    return NULL;
+  }
+  if (config.durability == CONTROLLER_CONFIG_DURABILITY_DEGRADED_COMMIT) {
+    return "Settings saved but could\nnot be verified";
+  }
+  if (config.durability == CONTROLLER_CONFIG_DURABILITY_VOLATILE_RECOVERY) {
+    return "Settings storage unavailable;\nchanges may not survive";
+  }
+  return NULL;
+}
+
+static void post_runtime_network_status(const char *status) {
+  const char *warning = config_durability_warning();
+  eink_ui_post_network_status(warning ? warning : status);
+}
+
+static void show_config_durability_diagnostic(void) {
+  controller_config_snapshot_t config = {0};
+  if (!controller_config_snapshot(&config)) {
+    return;
+  }
+  if (config.durability == CONTROLLER_CONFIG_DURABILITY_DEGRADED_COMMIT) {
+    post_runtime_network_status(NULL);
+  } else if (config.durability == CONTROLLER_CONFIG_DURABILITY_VOLATILE_RECOVERY) {
+    post_runtime_network_status(NULL);
+  }
+}
 
 void rk_net_evt_cb(rk_net_evt_t evt, const char *ip_opt) {
   switch (evt) {
@@ -42,19 +75,19 @@ void rk_net_evt_cb(rk_net_evt_t evt, const char *ip_opt) {
     int retry = wifi_mgr_get_retry_count();
     ESP_LOGI(TAG, "WiFi: Connecting... (retry %d)", retry);
     if (retry == 0) {
-      eink_ui_post_network_status("WiFi: Connecting...");
+      post_runtime_network_status("WiFi: Connecting...");
     }
     break;
   }
 
   case RK_NET_EVT_GOT_IP:
     ESP_LOGI(TAG, "WiFi connected with IP: %s", ip_opt ? ip_opt : "unknown");
-    eink_ui_post_network_status("WiFi: Connected");
+    post_runtime_network_status("WiFi: Connected");
     bridge_client_set_device_ip(ip_opt);
     bridge_client_set_network_ready(true);
     s_mdns_init_pending = true;
     s_ble_init_pending = true;
-    s_sta_server_pending = true;
+    atomic_store_explicit(&s_sta_server_pending, true, memory_order_release);
     break;
 
   case RK_NET_EVT_FAIL:
@@ -67,7 +100,7 @@ void rk_net_evt_cb(rk_net_evt_t evt, const char *ip_opt) {
     ESP_LOGW(TAG, "WiFi: %s, attempt %d/%d", error, attempt, max);
     char msg[64];
     snprintf(msg, sizeof(msg), "WiFi: %s (%d/%d)", error, attempt, max);
-    eink_ui_post_network_status(msg);
+    post_runtime_network_status(msg);
     bridge_client_set_network_ready(false);
     break;
   }
@@ -77,11 +110,15 @@ void rk_net_evt_cb(rk_net_evt_t evt, const char *ip_opt) {
     eink_ui_post_network_status("WiFi Setup: Connect to\nhiphi-frame-setup");
     eink_ui_post_zone_name("WiFi Setup");
     bridge_client_set_network_ready(false);
+    /* The provisioning adapter has stopped the shared STA server before the
+     * AP portal started. Discard any stale deferred STA-start request. */
+    atomic_store_explicit(&s_sta_server_pending, false, memory_order_release);
     break;
 
   case RK_NET_EVT_AP_STOPPED:
     ESP_LOGI(TAG, "WiFi: AP mode stopped, connecting to network...");
-    eink_ui_post_network_status("WiFi: Connecting...");
+    post_runtime_network_status("WiFi: Connecting...");
+    atomic_store_explicit(&s_sta_server_pending, false, memory_order_release);
     break;
 
   default:
@@ -127,12 +164,13 @@ static void ui_loop_task(void *arg) {
     }
 
     // Deferred STA web server (zone picker + BLE config)
-    if (s_sta_server_pending) {
-      s_sta_server_pending = false;
-      if (!s_sta_server_initialized) {
-        s_sta_server_initialized = true;
+    if (atomic_exchange_explicit(&s_sta_server_pending, false,
+                                 memory_order_acq_rel)) {
+      if (!wifi_mgr_is_ap_mode()) {
         ESP_LOGI(TAG, "Starting STA web server...");
-        captive_portal_start_sta();
+        if (!captive_portal_start_sta()) {
+          ESP_LOGE(TAG, "Failed to start STA web server; will retry on next network event");
+        }
       }
     }
 
@@ -189,6 +227,7 @@ void app_main(void) {
   // Start application logic (bridge client)
   ESP_LOGI(TAG, "Starting app...");
   app_entry();
+  show_config_durability_diagnostic();
 
   // Start WiFi (events will trigger mDNS init and bridge connection)
   ESP_LOGI(TAG, "Starting WiFi...");

@@ -2,7 +2,22 @@
 // E-ink rendering and refresh policy remain entirely target-owned.
 
 #include "controller_presentation.h"
+#include "controller_config.h"
 #include "eink_ui.h"
+
+static const char *config_durability_warning(void) {
+    controller_config_snapshot_t config;
+    if (!controller_config_snapshot(&config)) {
+        return NULL;
+    }
+    if (config.durability == CONTROLLER_CONFIG_DURABILITY_DEGRADED_COMMIT) {
+        return "Settings saved but could\nnot be verified";
+    }
+    if (config.durability == CONTROLLER_CONFIG_DURABILITY_VOLATILE_RECOVERY) {
+        return "Settings storage unavailable;\nchanges may not survive";
+    }
+    return NULL;
+}
 
 void controller_presentation_update(const char *line1, const char *line2,
                                     const char *line3, bool playing,
@@ -26,7 +41,8 @@ void controller_presentation_set_zone_name(const char *zone_name) {
 }
 
 void controller_presentation_set_network_status(const char *status) {
-    eink_ui_set_network_status(status);
+    const char *warning = config_durability_warning();
+    eink_ui_set_network_status(warning ? warning : status);
 }
 
 void controller_presentation_set_artwork(const char *image_key) {

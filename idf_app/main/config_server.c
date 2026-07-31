@@ -2,7 +2,8 @@
 // Access at http://<knob-ip>/ to set bridge URL
 
 #include "config_server.h"
-#include "platform/platform_storage.h"
+#include "controller_config.h"
+#include "http_server_lifecycle.h"
 #include "platform/platform_mdns.h"
 #include "bridge_client.h"
 #include "rk_ble_hid_host.h"
@@ -20,6 +21,21 @@
 static const char *TAG = "config_server";
 
 static httpd_handle_t s_server = NULL;
+
+static esp_err_t send_unverified_settings(httpd_req_t *req) {
+    httpd_resp_set_status(req, "503 Service Unavailable");
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_sendstr(req,
+        "Settings saved but could not be verified. No restart was performed; please try again.");
+    return ESP_FAIL;
+}
+
+static void apply_committed_wifi(bool reconnect) {
+    controller_config_wifi_snapshot_t wifi = {0};
+    if (controller_config_wifi_snapshot(&wifi)) {
+        wifi_mgr_apply_wifi(&wifi, reconnect);
+    }
+}
 
 static esp_err_t send_conflict(httpd_req_t *req, const char *message) {
     httpd_resp_set_status(req, "409 Conflict");
@@ -243,10 +259,15 @@ static void resolve_local_in_url(char *url, size_t url_len) {
 static esp_err_t config_get_handler(httpd_req_t *req) {
     ESP_LOGI(TAG, "Serving config page");
 
-    rk_cfg_t cfg = {0};
-    platform_storage_load(&cfg);
+    controller_config_snapshot_t snapshot = {0};
+    if (!controller_config_snapshot(&snapshot)) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "Settings are unavailable");
+        return ESP_FAIL;
+    }
+    const rk_cfg_t *cfg = &snapshot.value;
 
-    const char *current = cfg.bridge_base[0] ? cfg.bridge_base : "(mDNS auto-discovery)";
+    const char *current = cfg->bridge_base[0] ? cfg->bridge_base : "(mDNS auto-discovery)";
 
     // Get bridge connection status
     const char *status_class;
@@ -258,7 +279,7 @@ static esp_err_t config_get_handler(httpd_req_t *req) {
     if (bridge_connected) {
         status_class = "status-ok";
         snprintf(status_text, sizeof(status_text), "Connected");
-    } else if (!cfg.bridge_base[0]) {
+    } else if (!cfg->bridge_base[0]) {
         status_class = "status-warn";
         snprintf(status_text, sizeof(status_text), "Searching via mDNS...");
     } else if (retry_count >= retry_max) {
@@ -274,9 +295,9 @@ static esp_err_t config_get_handler(httpd_req_t *req) {
 
     char wifi_html[1024] = "";
     size_t wifi_pos = 0;
-    for (int i = 0; i < cfg.wifi_count && i < RK_MAX_WIFI; i++) {
+    for (int i = 0; i < cfg->wifi_count && i < RK_MAX_WIFI; i++) {
         char escaped_ssid[192];
-        html_escape(cfg.wifi[i].ssid, escaped_ssid, sizeof(escaped_ssid));
+        html_escape(cfg->wifi[i].ssid, escaped_ssid, sizeof(escaped_ssid));
         int written = snprintf(
             wifi_html + wifi_pos, sizeof(wifi_html) - wifi_pos,
             "<div class='wifi-entry'><span>%d. %s</span>"
@@ -303,7 +324,7 @@ static esp_err_t config_get_handler(httpd_req_t *req) {
     }
 
     snprintf(html, 4096, HTML_CONFIG, current, status_class, status_text,
-             wifi_html, cfg.bridge_base);
+             wifi_html, cfg->bridge_base);
 
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, html, strlen(html));
@@ -324,17 +345,13 @@ static esp_err_t config_post_handler(httpd_req_t *req) {
     buf[received] = '\0';
     ESP_LOGI(TAG, "Received config: %s", buf);
 
-    rk_cfg_t cfg = {0};
-    platform_storage_load(&cfg);
-
     // Check if Clear button was pressed
     char action[16] = {0};
     get_form_field(buf, "action", action, sizeof(action));
 
     const char *message;
+    char bridge_base[129] = {0};
     if (strcmp(action, "Clear") == 0) {
-        cfg.bridge_base[0] = '\0';
-        cfg.bridge_from_mdns = 0;  // Will be set when mDNS discovers
         message = "Bridge cleared! Will use mDNS.";
         ESP_LOGI(TAG, "Bridge URL cleared");
     } else {
@@ -348,25 +365,26 @@ static esp_err_t config_post_handler(httpd_req_t *req) {
             return ESP_FAIL;
         }
 
-        strncpy(cfg.bridge_base, bridge, sizeof(cfg.bridge_base) - 1);
+        rk_strlcpy(bridge_base, bridge, sizeof(bridge_base));
 
         // Resolve .local hostnames to IPs (ESP32 lwIP has issues with .local DNS)
         if (bridge[0]) {
-            resolve_local_in_url(cfg.bridge_base, sizeof(cfg.bridge_base));
-            cfg.bridge_from_mdns = 0;  // Manually configured
-        } else {
-            cfg.bridge_from_mdns = 0;  // Will be set when mDNS discovers
+            resolve_local_in_url(bridge_base, sizeof(bridge_base));
         }
 
-        message = cfg.bridge_base[0] ? "Bridge URL saved!" : "Bridge cleared! Will use mDNS.";
-        ESP_LOGI(TAG, "Bridge URL set to: %s", cfg.bridge_base[0] ? cfg.bridge_base : "(mDNS)");
+        message = bridge_base[0] ? "Bridge URL saved!" : "Bridge cleared! Will use mDNS.";
+        ESP_LOGI(TAG, "Bridge URL set to: %s", bridge_base[0] ? bridge_base : "(mDNS)");
     }
 
-    if (!bridge_client_store_bridge_base(cfg.bridge_base,
-                                         cfg.bridge_from_mdns != 0)) {
+    controller_config_write_result_t result =
+        controller_config_set_endpoint(bridge_base, false, NULL);
+    if (result == CONTROLLER_CONFIG_NOT_COMMITTED) {
         ESP_LOGE(TAG, "Failed to save config");
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to save");
         return ESP_FAIL;
+    }
+    if (result == CONTROLLER_CONFIG_COMMITTED_UNVERIFIED) {
+        return send_unverified_settings(req);
     }
 
     // Send success response
@@ -406,24 +424,39 @@ static esp_err_t wifi_add_handler(httpd_req_t *req) {
     }
     get_form_field(buf, "pass", pass, sizeof(pass));
 
-    rk_cfg_t cfg = {0};
-    platform_storage_load(&cfg);
-    if (rk_cfg_add_wifi(&cfg, ssid, pass) < 0) {
+    controller_config_wifi_snapshot_t wifi = {0};
+    if (!controller_config_wifi_snapshot(&wifi)) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "Settings are unavailable");
+        return ESP_FAIL;
+    }
+    bool updating_saved_network = false;
+    for (size_t i = 0; i < wifi.count && i < RK_MAX_WIFI; ++i) {
+        if (strcmp(wifi.entries[i].ssid, ssid) == 0) {
+            updating_saved_network = true;
+            break;
+        }
+    }
+    if (wifi.count >= RK_MAX_WIFI && !updating_saved_network) {
         httpd_resp_set_status(req, "409 Conflict");
         httpd_resp_set_type(req, "text/plain");
         httpd_resp_sendstr(req,
                           "Two networks are already saved; remove one first");
         return ESP_FAIL;
     }
-    rk_cfg_sync_primary_wifi(&cfg);
-    cfg.cfg_ver = RK_CFG_CURRENT_VER;
-    if (!bridge_client_store_local_connectivity(&cfg)) {
+    controller_config_write_result_t result =
+        controller_config_upsert_wifi(ssid, pass, false, NULL);
+    if (result == CONTROLLER_CONFIG_NOT_COMMITTED) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to save");
         return ESP_FAIL;
     }
+    if (result == CONTROLLER_CONFIG_COMMITTED_UNVERIFIED) {
+        apply_committed_wifi(false);
+        return send_unverified_settings(req);
+    }
+    apply_committed_wifi(false);
 
-    ESP_LOGI(TAG, "Added WiFi '%s' to this Dial (%d saved)", ssid,
-             cfg.wifi_count);
+    ESP_LOGI(TAG, "Added WiFi '%s' to this Dial", ssid);
     httpd_resp_set_status(req, "303 See Other");
     httpd_resp_set_hdr(req, "Location", "/");
     httpd_resp_sendstr(req, "Redirecting...");
@@ -451,18 +484,28 @@ static esp_err_t wifi_remove_handler(httpd_req_t *req) {
         return ESP_FAIL;
     }
 
-    rk_cfg_t cfg = {0};
-    platform_storage_load(&cfg);
     int idx = (int)parsed;
-    if (idx < cfg.wifi_count) {
-        ESP_LOGI(TAG, "Removing WiFi '%s' from this Dial", cfg.wifi[idx].ssid);
-        rk_cfg_remove_wifi(&cfg, idx);
-        rk_cfg_sync_primary_wifi(&cfg);
-        if (!bridge_client_store_local_connectivity(&cfg)) {
+    controller_config_snapshot_t snapshot = {0};
+    if (!controller_config_snapshot(&snapshot)) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "Settings are unavailable");
+        return ESP_FAIL;
+    }
+    if (idx < snapshot.value.wifi_count) {
+        ESP_LOGI(TAG, "Removing WiFi '%s' from this Dial",
+                 snapshot.value.wifi[idx].ssid);
+        controller_config_write_result_t result =
+            controller_config_remove_wifi((size_t)idx, NULL);
+        if (result == CONTROLLER_CONFIG_NOT_COMMITTED) {
             httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
                                 "Failed to save");
             return ESP_FAIL;
         }
+        if (result == CONTROLLER_CONFIG_COMMITTED_UNVERIFIED) {
+            apply_committed_wifi(false);
+            return send_unverified_settings(req);
+        }
+        apply_committed_wifi(false);
     }
 
     httpd_resp_set_status(req, "303 See Other");
@@ -702,10 +745,24 @@ static esp_err_t ble_forget_handler(httpd_req_t *req) {
 }
 
 void config_server_start(void) {
-    if (s_server) {
-        ESP_LOGW(TAG, "Config server already running");
+    if (!http_server_lifecycle_lock()) {
+        ESP_LOGE(TAG, "Could not acquire HTTP lifecycle lock");
         return;
     }
+    if (http_server_lifecycle_owner_locked() ==
+        HTTP_SERVER_OWNER_CAPTIVE_PORTAL) {
+        ESP_LOGW(TAG, "Config server start suppressed while AP owns port 80");
+        http_server_lifecycle_unlock();
+        return;
+    }
+    if (s_server) {
+        ESP_LOGW(TAG, "Config server already running");
+        http_server_lifecycle_claim_locked(HTTP_SERVER_OWNER_CONFIG);
+        http_server_lifecycle_unlock();
+        return;
+    }
+
+    http_server_lifecycle_claim_locked(HTTP_SERVER_OWNER_CONFIG);
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
@@ -717,6 +774,8 @@ void config_server_start(void) {
 
     if (httpd_start(&s_server, &config) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start HTTP server");
+        http_server_lifecycle_release_locked(HTTP_SERVER_OWNER_CONFIG);
+        http_server_lifecycle_unlock();
         return;
     }
 
@@ -785,18 +844,35 @@ void config_server_start(void) {
     httpd_register_uri_handler(s_server, &ble_forget);
 
     ESP_LOGI(TAG, "Config server started");
+    http_server_lifecycle_unlock();
 }
 
-void config_server_stop(void) {
+void config_server_stop_locked(void) {
     if (!s_server) {
+        http_server_lifecycle_release_locked(HTTP_SERVER_OWNER_CONFIG);
         return;
     }
 
     ESP_LOGI(TAG, "Stopping config server");
     httpd_stop(s_server);
     s_server = NULL;
+    http_server_lifecycle_release_locked(HTTP_SERVER_OWNER_CONFIG);
+}
+
+void config_server_stop(void) {
+    if (!http_server_lifecycle_lock()) {
+        ESP_LOGE(TAG, "Could not acquire HTTP lifecycle lock");
+        return;
+    }
+    config_server_stop_locked();
+    http_server_lifecycle_unlock();
 }
 
 bool config_server_is_running(void) {
-    return s_server != NULL;
+    if (!http_server_lifecycle_lock()) {
+        return false;
+    }
+    bool running = s_server != NULL;
+    http_server_lifecycle_unlock();
+    return running;
 }

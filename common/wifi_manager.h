@@ -3,7 +3,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-#include "rk_cfg.h"
+#include "controller_config.h"
 
 typedef enum {
     RK_NET_EVT_CONNECTING,   // Attempting STA connection
@@ -19,7 +19,10 @@ typedef enum {
 
 void wifi_mgr_start(void);                   // call once at boot
 void wifi_mgr_stop(void);                    // full stop (for BLE mode switch)
-void wifi_mgr_reconnect(const rk_cfg_t *cfg);   // apply new cfg and reconnect
+/* Apply a copied, already-committed local-connectivity projection. This never
+ * persists. Set reconnect only for flows whose existing behavior reconnects. */
+void wifi_mgr_apply_wifi(const controller_config_wifi_snapshot_t *wifi,
+                         bool reconnect);
 void wifi_mgr_forget_wifi(void);             // clears this device's configuration and reboots
 bool wifi_mgr_get_ip(char *buf, size_t n);   // "a.b.c.d"
 void wifi_mgr_get_ssid(char *buf, size_t n);

@@ -1,5 +1,5 @@
 #include "ota_update.h"
-#include "platform/platform_storage.h"
+#include "controller_config.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -18,11 +18,10 @@ static TaskHandle_t s_ota_task = NULL;
 
 // Get bridge base URL from storage
 static bool get_bridge_url(char *url, size_t len) {
-    rk_cfg_t cfg;
-    if (platform_storage_load(&cfg)) {
-        if (cfg.bridge_base[0]) {
-            strncpy(url, cfg.bridge_base, len - 1);
-            url[len - 1] = '\0';
+    controller_config_snapshot_t snapshot = {0};
+    if (controller_config_snapshot(&snapshot)) {
+        if (snapshot.value.bridge_base[0]) {
+            rk_strlcpy(url, snapshot.value.bridge_base, len);
             return true;
         }
     }

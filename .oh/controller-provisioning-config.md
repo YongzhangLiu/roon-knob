@@ -2,8 +2,8 @@
 
 ## Session
 
-- Phase: solution-space
-- Status: solution accepted; ready for execute
+- Phase: execute
+- Status: implementation accepted for draft push; CI and exact-artifact hardware gates remain
 - Updated: 2026-07-31
 - Baseline: `bdea8e6f4ebfe555416667a9a928a632c3abacb0`
 - Branch: `codex/issue-190-provisioning-config`
@@ -769,6 +769,122 @@ mutable config API, or a new bridge/UI dependency.
 **ADR:** Recommended after maintainer acceptance; not required to begin the
 reversible implementation.
 
+## Execute
+
+**Updated:** 2026-07-31
+**Status:** in progress
+
+### Pre-flight
+
+- Aim is clear: establish one authoritative same-device configuration
+  transaction boundary and remove shared Wi-Fi's target portal dependency.
+- Constraints are known: unchanged NVS namespace/key/V3 layout and same-device
+  upgrades; no cross-device migration; no bridge/UI/BLE/recovery god object; no
+  altered normal retry/presentation behavior.
+- Context is loaded: every current raw reader/writer, boot ordering, remote
+  preference parser, mDNS endpoint writer, portal lifecycle, target storage
+  backend, and dependency-policy edge is inventoried above.
+- Scope is bounded: the atomic configuration/provisioning cutover only. Adaptive
+  controls, HQPlayer, Home Assistant, accessories, input persistence, Frame
+  power policy, and recovery reducer remain out of scope.
+- Success is explicit: all production reads/writes use owner
+  snapshots/projections, full-field verification and three durability outcomes
+  pass native tests, stale endpoint responses fail closed, portal readiness is
+  truthful, dependency enforcement passes, both PERF targets build, and exact
+  artifacts pass hardware smoke before merge.
+
+### Workstreams
+
+1. Shared config owner, storage outcomes, compatibility/default fixtures.
+2. Target-neutral provisioning port and AP-stable service retry.
+3. Production reader/writer migration, actor apply methods, endpoint fencing,
+   and remote preference validation.
+4. Enforcement, native/sanitizer suites, target builds, and exact-artifact
+   review/dissent/hardware evidence.
+
+No intermediate commit is a releasable cutover until all four workstreams are
+integrated.
+
 Implementation must stop and return to solution-space if preserving current
 behavior requires a schema change, cross-device migration, a generic mutable
 config callback, or a new bridge/UI dependency.
+
+## Execute Evidence
+
+**Updated:** 2026-07-31
+
+**Draft PR:** #222
+
+**Decision:** accepted for commit/push; not accepted for merge or release
+
+### Integrated result
+
+- One shared `controller_config` owner now serializes the current device's
+  existing V3 compatibility blob and exposes copied snapshots plus typed
+  mutations. There is no cross-device NVS import, restore, or transfer path.
+- Target backends retain the existing device-local namespace/key and decode the
+  same V1/V2/V3 layouts. Read-side repair no longer writes; the owner decides
+  persistence and preserves a readable recovered candidate in RAM when repair
+  persistence fails.
+- Writes distinguish `NOT_COMMITTED`, `COMMITTED_VERIFIED`, and
+  `COMMITTED_UNVERIFIED`; runtime presentation distinguishes durable, degraded,
+  and volatile recovery snapshots.
+- Shared Wi-Fi uses a target-neutral provisioning port. ESP Wi-Fi effects and
+  target provisioning effects have separate serialized gates; all three
+  FreeRTOS mutexes use guarded static initialization.
+- Dial has explicit port-80 ownership across config-server to captive-portal
+  handoff. Frame replaces STA HTTP with AP HTTP under one lifecycle lock.
+- Dial and Frame DNS tasks capture their own socket and cannot be restarted
+  until a stopped task acknowledges retirement.
+- Successful setup responds before a single deferred reboot/countdown task;
+  the HTTP worker is no longer blocked for the reboot delay.
+- Bridge endpoint and sparse remote-preference writes use typed owner methods
+  and endpoint-generation fencing; local Wi-Fi, endpoint, zone, and display
+  settings cannot overwrite one another through stale full-blob copies.
+
+### Verification
+
+- Full shared CI command block passes locally, including owner/default tests,
+  sanitizers, provisioning adapters, Wi-Fi lifecycle races, controller seams,
+  dependency/identity policy, and BLE HID host contracts.
+- Forced Wi-Fi concurrency harness passes 30 consecutive runs and covers
+  copied-credential interleaving, STA/AP effect ordering, and provisioning
+  start/stop exclusion.
+- Dependency policy: 260 allowed, 4 boundary-owned, 22 grandfathered; negative
+  fixture passes.
+- Clean Docker ESP-IDF v5.5.5 PERF builds after the final corrections:
+  - Dial: `hiphi_dial.bin` 0x1bc210, 31% app partition free;
+  - Frame: `hiphi_frame.bin` 0x107800, 74% app partition free.
+- Both configs prove PERF optimization, absence of DEBUG optimization, 4096-byte
+  ESP system event stack, and BLE/NimBLE HID inclusion. Frame also proves QIO
+  at 80 MHz.
+- `git diff --check` passes.
+
+### Execute review and dissent
+
+The first fresh execute review/dissent returned **ADJUST** for three P1 issues:
+
+1. ESP lazy mutex initialization could create distinct locks under first-use
+   contention;
+2. Frame DNS could reuse globals before a delayed task acknowledged exit;
+3. a decoded same-device config was replaced with defaults when its repair
+   write was not committed.
+
+All three were corrected with guarded static mutexes, task-local DNS sockets
+plus stop/ack/reap fencing, and volatile publication of the recovered candidate
+plus a regression test.
+
+The post-correction Terra `/review` verdict is **ACCEPT**. The post-correction
+Terra `/dissent` verdict is **ACCEPT for pushing the draft implementation**.
+Neither is a merge or release verdict.
+
+### Remaining gates
+
+1. Push the implementation and require green CI on its exact commit SHA.
+2. Download the exact CI Dial and Frame merged artifacts.
+3. Physically validate Dial boot, existing-device config, AP provisioning,
+   normal control, and BLE/Wi-Fi coexistence.
+4. Physically validate Frame boot, AP provisioning/DNS, e-ink UI, input,
+   media-remote pairing/control, and Wi-Fi/BLE coexistence.
+5. Re-run review/dissent on exact-artifact evidence before marking #222 or the
+   stacked program ready to merge/release.

@@ -1,11 +1,11 @@
 #include "captive_portal.h"
 #include "dns_server.h"
-#include "platform/platform_storage.h"
-#include "rk_cfg.h"
+#include "controller_config.h"
 #include "eink_ui.h"
 #include "wifi_manager.h"
 #include "bridge_client.h"
 #include "rk_ble_hid_host.h"
+#include "os_mutex.h"
 
 #include <esp_err.h>
 #include <esp_http_server.h>
@@ -19,6 +19,115 @@
 static const char *TAG = "captive_portal";
 
 static httpd_handle_t s_server = NULL;
+typedef enum {
+  WEB_SERVER_NONE = 0,
+  WEB_SERVER_AP_PORTAL,
+  WEB_SERVER_STA_CONFIG,
+} web_server_mode_t;
+static web_server_mode_t s_server_mode = WEB_SERVER_NONE;
+static os_mutex_t s_server_lifecycle_lock = OS_MUTEX_INITIALIZER;
+static portMUX_TYPE s_reboot_schedule_lock = portMUX_INITIALIZER_UNLOCKED;
+static bool s_reboot_scheduled = false;
+
+typedef struct {
+  char ssid[33];
+} setup_reboot_context_t;
+
+static void setup_reboot_task(void *arg) {
+  setup_reboot_context_t *context = arg;
+  char ssid[sizeof(context->ssid)];
+  snprintf(ssid, sizeof(ssid), "%s", context->ssid);
+  free(context);
+
+  char msg[80];
+  snprintf(msg, sizeof(msg), "WiFi: %s\nRebooting...", ssid);
+  eink_ui_post_network_status(msg);
+  vTaskDelay(pdMS_TO_TICKS(3000));
+  esp_restart();
+  vTaskDelete(NULL);
+}
+
+static bool schedule_setup_reboot(const char *ssid) {
+  setup_reboot_context_t *context = calloc(1, sizeof(*context));
+  if (!context) {
+    return false;
+  }
+  snprintf(context->ssid, sizeof(context->ssid), "%s", ssid ? ssid : "");
+
+  taskENTER_CRITICAL(&s_reboot_schedule_lock);
+  if (s_reboot_scheduled) {
+    taskEXIT_CRITICAL(&s_reboot_schedule_lock);
+    free(context);
+    return true;
+  }
+  s_reboot_scheduled = true;
+  taskEXIT_CRITICAL(&s_reboot_schedule_lock);
+
+  if (xTaskCreate(setup_reboot_task, "setup_reboot", 4096, context, 4,
+                  NULL) != pdPASS) {
+    taskENTER_CRITICAL(&s_reboot_schedule_lock);
+    s_reboot_scheduled = false;
+    taskEXIT_CRITICAL(&s_reboot_schedule_lock);
+    free(context);
+    return false;
+  }
+  return true;
+}
+
+#ifdef ESP_PLATFORM
+static portMUX_TYPE s_server_lock_init = portMUX_INITIALIZER_UNLOCKED;
+static StaticSemaphore_t s_server_lock_storage;
+
+static bool ensure_server_lifecycle_lock(void) {
+  bool ready;
+  taskENTER_CRITICAL(&s_server_lock_init);
+  if (s_server_lifecycle_lock == NULL) {
+    s_server_lifecycle_lock = xSemaphoreCreateMutexStatic(
+        &s_server_lock_storage);
+  }
+  ready = s_server_lifecycle_lock != NULL;
+  taskEXIT_CRITICAL(&s_server_lock_init);
+  return ready;
+}
+#else
+static bool ensure_server_lifecycle_lock(void) { return true; }
+#endif
+
+static bool lock_server_lifecycle(void) {
+  return ensure_server_lifecycle_lock() &&
+         os_mutex_lock(&s_server_lifecycle_lock) == 0;
+}
+
+static void unlock_server_lifecycle(void) {
+  (void)os_mutex_unlock(&s_server_lifecycle_lock);
+}
+
+static void stop_server_locked(void);
+
+static bool register_uri_handler(const httpd_uri_t *uri) {
+  esp_err_t err = httpd_register_uri_handler(s_server, uri);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to register %s: %s", uri->uri,
+             esp_err_to_name(err));
+    return false;
+  }
+  return true;
+}
+
+static esp_err_t send_unverified_settings(httpd_req_t *req) {
+  httpd_resp_set_status(req, "503 Service Unavailable");
+  httpd_resp_set_type(req, "text/plain");
+  httpd_resp_sendstr(req,
+      "Settings saved but could not be verified. Keep this setup page open and try again.");
+  return ESP_FAIL;
+}
+
+static void apply_committed_wifi(bool reconnect) {
+  controller_config_wifi_snapshot_t wifi = {0};
+  if (controller_config_wifi_snapshot(&wifi)) {
+    wifi_mgr_apply_wifi(&wifi, reconnect);
+  }
+}
 
 static esp_err_t send_conflict(httpd_req_t *req, const char *message) {
   httpd_resp_set_status(req, "409 Conflict");
@@ -247,17 +356,26 @@ static esp_err_t wifi_remove_handler(httpd_req_t *req) {
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid index");
     return ESP_FAIL;
   }
-  rk_cfg_t cfg = {0};
-  platform_storage_load(&cfg);
-  if (idx >= 0 && idx < cfg.wifi_count) {
-    ESP_LOGI(TAG, "Removing WiFi: '%s'", cfg.wifi[idx].ssid);
-    rk_cfg_remove_wifi(&cfg, idx);
-    rk_cfg_sync_primary_wifi(&cfg);
-    if (!platform_storage_save(&cfg)) {
+  controller_config_snapshot_t snapshot = {0};
+  if (!controller_config_snapshot(&snapshot)) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                        "Settings are unavailable");
+    return ESP_FAIL;
+  }
+  if (idx >= 0 && idx < snapshot.value.wifi_count) {
+    ESP_LOGI(TAG, "Removing WiFi: '%s'", snapshot.value.wifi[idx].ssid);
+    controller_config_write_result_t result =
+        controller_config_remove_wifi((size_t)idx, NULL);
+    if (result == CONTROLLER_CONFIG_NOT_COMMITTED) {
       httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
                           "Failed to save");
       return ESP_FAIL;
     }
+    if (result == CONTROLLER_CONFIG_COMMITTED_UNVERIFIED) {
+      apply_committed_wifi(false);
+      return send_unverified_settings(req);
+    }
+    apply_committed_wifi(false);
   }
   httpd_resp_set_status(req, "302 Found");
   httpd_resp_set_hdr(req, "Location", "http://192.168.4.1/");
@@ -269,14 +387,19 @@ static esp_err_t wifi_remove_handler(httpd_req_t *req) {
 static esp_err_t root_get_handler(httpd_req_t *req) {
   ESP_LOGI(TAG, "Serving config form");
 
-  rk_cfg_t cfg = {0};
-  platform_storage_load(&cfg);
+  controller_config_snapshot_t snapshot = {0};
+  if (!controller_config_snapshot(&snapshot)) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                        "Settings are unavailable");
+    return ESP_FAIL;
+  }
+  const rk_cfg_t *cfg = &snapshot.value;
 
   char wifi_html[1024] = "";
   int pos = 0;
-  for (int i = 0; i < cfg.wifi_count && i < RK_MAX_WIFI; i++) {
+  for (int i = 0; i < cfg->wifi_count && i < RK_MAX_WIFI; i++) {
     char escaped[128];
-    html_escape(cfg.wifi[i].ssid, escaped, sizeof(escaped));
+    html_escape(cfg->wifi[i].ssid, escaped, sizeof(escaped));
     pos += snprintf(wifi_html + pos, sizeof(wifi_html) - pos,
         "<div class='wifi-entry'>"
         "<span>%s</span>"
@@ -341,9 +464,9 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
     "target='_blank'>github.com/muness/roon-knob</a> for details."
     "</div></body></html>",
     FAVICON_LINK,
-    cfg.wifi_count > 0 ? "<h2>Saved Networks</h2><div class='section'>" : "",
+    cfg->wifi_count > 0 ? "<h2>Saved Networks</h2><div class='section'>" : "",
     wifi_html,
-    cfg.wifi_count > 0 ? "</div>" : "");
+    cfg->wifi_count > 0 ? "</div>" : "");
 
   httpd_resp_set_type(req, "text/html");
   httpd_resp_send(req, html, strlen(html));
@@ -376,26 +499,31 @@ static esp_err_t configure_post_handler(httpd_req_t *req) {
   eink_ui_post_network_status("Saving...");
   vTaskDelay(pdMS_TO_TICKS(500));
 
-  rk_cfg_t cfg = {0};
-  if (!platform_storage_load(&cfg) || !rk_cfg_is_valid(&cfg)) {
-    rk_cfg_set_display_defaults(&cfg);
+  controller_config_wifi_snapshot_t wifi = {0};
+  if (!controller_config_wifi_snapshot(&wifi)) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                        "Settings are unavailable");
+    return ESP_FAIL;
   }
-  int wifi_idx = rk_cfg_add_wifi(&cfg, ssid, pass);
-  if (wifi_idx < 0) {
+  bool updating_saved_network = false;
+  for (size_t i = 0; i < wifi.count && i < RK_MAX_WIFI; ++i) {
+    if (strcmp(wifi.entries[i].ssid, ssid) == 0) {
+      updating_saved_network = true;
+      break;
+    }
+  }
+  if (wifi.count >= RK_MAX_WIFI && !updating_saved_network) {
     httpd_resp_set_status(req, "409 Conflict");
     httpd_resp_set_type(req, "text/plain");
     httpd_resp_sendstr(req,
                       "Two networks are already saved; remove one first");
     return ESP_FAIL;
   }
-  // Captive setup is an explicit request to connect to this network now.
-  rk_cfg_promote_wifi(&cfg, wifi_idx);
-  cfg.cfg_ver = RK_CFG_CURRENT_VER;
-
-  bool save_ok = platform_storage_save(&cfg);
+  controller_config_write_result_t result =
+      controller_config_upsert_wifi(ssid, pass, true, NULL);
 
   httpd_resp_set_type(req, "text/html");
-  if (!save_ok) {
+  if (result == CONTROLLER_CONFIG_NOT_COMMITTED) {
     ESP_LOGE(TAG, "Failed to save config");
     httpd_resp_send(req,
       "<!DOCTYPE html><html><head>"
@@ -410,20 +538,31 @@ static esp_err_t configure_post_handler(httpd_req_t *req) {
     vTaskDelay(pdMS_TO_TICKS(5000));
     return ESP_FAIL;
   }
+  if (result == CONTROLLER_CONFIG_COMMITTED_UNVERIFIED) {
+    ESP_LOGW(TAG, "WiFi credentials committed but could not be verified");
+    /* Preserve the setup surface while aligning the derived cache with the
+     * authoritative candidate that may now be durable. */
+    apply_committed_wifi(false);
+    (void)send_unverified_settings(req);
+    eink_ui_post_network_status("VERIFY SETTINGS");
+    vTaskDelay(pdMS_TO_TICKS(5000));
+    return ESP_FAIL;
+  }
+  /* The proven setup flow responds and then reboots.  Do not tear down the
+   * captive HTTP server from inside its own request handler; the next boot
+   * will connect with the promoted network. */
+  apply_committed_wifi(false);
 
   httpd_resp_send_chunk(req, HTML_SUCCESS_HEAD, HTTPD_RESP_USE_STRLEN);
   httpd_resp_send_chunk(req, FAVICON_LINK, HTTPD_RESP_USE_STRLEN);
   httpd_resp_send_chunk(req, HTML_SUCCESS_BODY, HTTPD_RESP_USE_STRLEN);
   httpd_resp_send_chunk(req, NULL, 0);
 
-  ESP_LOGI(TAG, "Credentials saved, rebooting...");
-
-  char msg[80];
-  snprintf(msg, sizeof(msg), "WiFi: %s\nRebooting...", ssid);
-  eink_ui_post_network_status(msg);
-  vTaskDelay(pdMS_TO_TICKS(3000));
-
-  esp_restart();
+  ESP_LOGI(TAG, "Credentials saved, scheduling reboot...");
+  if (!schedule_setup_reboot(ssid)) {
+    ESP_LOGE(TAG, "Could not schedule setup reboot");
+    return ESP_FAIL;
+  }
   return ESP_OK;
 }
 
@@ -452,10 +591,18 @@ static esp_err_t android_captive_handler(httpd_req_t *req) {
   return ESP_OK;
 }
 
-void captive_portal_start(void) {
+bool captive_portal_start(void) {
+  if (!lock_server_lifecycle()) {
+    return false;
+  }
   if (s_server) {
-    ESP_LOGW(TAG, "Captive portal already running");
-    return;
+    if (s_server_mode == WEB_SERVER_AP_PORTAL && dns_server_is_running()) {
+      unlock_server_lifecycle();
+      return true;
+    }
+    ESP_LOGI(TAG, "Replacing HTTP server mode %d with AP portal",
+             s_server_mode);
+    stop_server_locked();
   }
 
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
@@ -467,36 +614,48 @@ void captive_portal_start(void) {
 
   if (httpd_start(&s_server, &config) != ESP_OK) {
     ESP_LOGE(TAG, "Failed to start HTTP server");
-    return;
+    unlock_server_lifecycle();
+    return false;
   }
 
   httpd_uri_t root = {.uri = "/", .method = HTTP_GET, .handler = root_get_handler};
-  httpd_register_uri_handler(s_server, &root);
+  if (!register_uri_handler(&root)) goto fail;
 
   httpd_uri_t configure = {.uri = "/configure", .method = HTTP_POST, .handler = configure_post_handler};
-  httpd_register_uri_handler(s_server, &configure);
+  if (!register_uri_handler(&configure)) goto fail;
 
   httpd_uri_t wifi_remove = {.uri = "/wifi-remove", .method = HTTP_POST, .handler = wifi_remove_handler};
-  httpd_register_uri_handler(s_server, &wifi_remove);
+  if (!register_uri_handler(&wifi_remove)) goto fail;
 
   httpd_uri_t ios_hotspot = {.uri = "/hotspot-detect.html", .method = HTTP_GET, .handler = ios_captive_handler};
-  httpd_register_uri_handler(s_server, &ios_hotspot);
+  if (!register_uri_handler(&ios_hotspot)) goto fail;
 
   httpd_uri_t ios_success = {.uri = "/library/test/success.html", .method = HTTP_GET, .handler = ios_captive_handler};
-  httpd_register_uri_handler(s_server, &ios_success);
+  if (!register_uri_handler(&ios_success)) goto fail;
 
   httpd_uri_t android_generate = {.uri = "/generate_204", .method = HTTP_GET, .handler = android_captive_handler};
-  httpd_register_uri_handler(s_server, &android_generate);
+  if (!register_uri_handler(&android_generate)) goto fail;
 
   httpd_uri_t android_gen204 = {.uri = "/gen_204", .method = HTTP_GET, .handler = android_captive_handler};
-  httpd_register_uri_handler(s_server, &android_gen204);
+  if (!register_uri_handler(&android_gen204)) goto fail;
 
   httpd_uri_t redirect = {.uri = "/*", .method = HTTP_GET, .handler = captive_redirect_handler};
-  httpd_register_uri_handler(s_server, &redirect);
+  if (!register_uri_handler(&redirect)) goto fail;
 
-  dns_server_start();
+  if (!dns_server_start() || !dns_server_is_running()) {
+    ESP_LOGE(TAG, "Failed to start captive DNS server");
+    goto fail;
+  }
 
+  s_server_mode = WEB_SERVER_AP_PORTAL;
   ESP_LOGI(TAG, "Captive portal started with DNS hijacking");
+  unlock_server_lifecycle();
+  return true;
+
+fail:
+  stop_server_locked();
+  unlock_server_lifecycle();
+  return false;
 }
 
 // ── Common CSS for STA-mode pages ──────────────────────────────────────────
@@ -941,10 +1100,15 @@ static esp_err_t sta_root_handler(httpd_req_t *req) {
 
 // ── STA-mode web server (runs when connected to WiFi) ───────────────────────
 
-void captive_portal_start_sta(void) {
+bool captive_portal_start_sta(void) {
+  if (!lock_server_lifecycle()) {
+    return false;
+  }
   if (s_server) {
-    ESP_LOGW(TAG, "Web server already running");
-    return;
+    ESP_LOGW(TAG, "Web server already exists (mode: %d)", s_server_mode);
+    bool ready = s_server_mode == WEB_SERVER_STA_CONFIG;
+    unlock_server_lifecycle();
+    return ready;
   }
 
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
@@ -955,41 +1119,51 @@ void captive_portal_start_sta(void) {
 
   if (httpd_start(&s_server, &config) != ESP_OK) {
     ESP_LOGE(TAG, "Failed to start HTTP server");
-    return;
+    unlock_server_lifecycle();
+    return false;
   }
 
   httpd_uri_t root = {.uri = "/", .method = HTTP_GET, .handler = sta_root_handler};
-  httpd_register_uri_handler(s_server, &root);
+  if (!register_uri_handler(&root)) goto fail;
 
   httpd_uri_t zones = {.uri = "/zones", .method = HTTP_GET, .handler = sta_zones_handler};
-  httpd_register_uri_handler(s_server, &zones);
+  if (!register_uri_handler(&zones)) goto fail;
 
   httpd_uri_t zone_set = {.uri = "/api/zone", .method = HTTP_POST, .handler = sta_zone_set_handler};
-  httpd_register_uri_handler(s_server, &zone_set);
+  if (!register_uri_handler(&zone_set)) goto fail;
 
   httpd_uri_t ble = {.uri = "/ble", .method = HTTP_GET, .handler = sta_ble_handler};
-  httpd_register_uri_handler(s_server, &ble);
+  if (!register_uri_handler(&ble)) goto fail;
 
   httpd_uri_t ble_scan = {.uri = "/api/ble-scan", .method = HTTP_POST, .handler = sta_ble_scan_handler};
-  httpd_register_uri_handler(s_server, &ble_scan);
+  if (!register_uri_handler(&ble_scan)) goto fail;
 
   httpd_uri_t ble_enable = {.uri = "/api/ble-enable", .method = HTTP_POST, .handler = sta_ble_enable_handler};
-  httpd_register_uri_handler(s_server, &ble_enable);
+  if (!register_uri_handler(&ble_enable)) goto fail;
 
   httpd_uri_t ble_pair = {.uri = "/api/ble-pair", .method = HTTP_POST, .handler = sta_ble_pair_handler};
-  httpd_register_uri_handler(s_server, &ble_pair);
+  if (!register_uri_handler(&ble_pair)) goto fail;
 
   httpd_uri_t ble_unpair = {.uri = "/api/ble-unpair", .method = HTTP_POST, .handler = sta_ble_unpair_handler};
-  httpd_register_uri_handler(s_server, &ble_unpair);
+  if (!register_uri_handler(&ble_unpair)) goto fail;
 
   httpd_uri_t restart = {.uri = "/api/restart", .method = HTTP_POST, .handler = sta_restart_handler};
-  httpd_register_uri_handler(s_server, &restart);
+  if (!register_uri_handler(&restart)) goto fail;
 
+  s_server_mode = WEB_SERVER_STA_CONFIG;
   ESP_LOGI(TAG, "STA web server started (zone picker + BLE config)");
+  unlock_server_lifecycle();
+  return true;
+
+fail:
+  stop_server_locked();
+  unlock_server_lifecycle();
+  return false;
 }
 
-void captive_portal_stop(void) {
+static void stop_server_locked(void) {
   if (!s_server) {
+    s_server_mode = WEB_SERVER_NONE;
     return;
   }
 
@@ -997,6 +1171,33 @@ void captive_portal_stop(void) {
   dns_server_stop();  // Safe no-op if DNS was never started (STA mode)
   httpd_stop(s_server);
   s_server = NULL;
+  s_server_mode = WEB_SERVER_NONE;
 }
 
-bool captive_portal_is_running(void) { return s_server != NULL; }
+void captive_portal_stop(void) {
+  if (!lock_server_lifecycle()) {
+    return;
+  }
+  stop_server_locked();
+  unlock_server_lifecycle();
+}
+
+bool captive_portal_is_running(void) {
+  if (!lock_server_lifecycle()) {
+    return false;
+  }
+  bool running = s_server != NULL &&
+                 s_server_mode == WEB_SERVER_AP_PORTAL &&
+                 dns_server_is_running();
+  unlock_server_lifecycle();
+  return running;
+}
+
+bool captive_portal_is_sta_running(void) {
+  if (!lock_server_lifecycle()) {
+    return false;
+  }
+  bool running = s_server != NULL && s_server_mode == WEB_SERVER_STA_CONFIG;
+  unlock_server_lifecycle();
+  return running;
+}

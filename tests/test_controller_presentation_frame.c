@@ -1,4 +1,5 @@
 #include "controller_presentation.h"
+#include "controller_config.h"
 #include "eink_ui.h"
 
 #include <assert.h>
@@ -22,6 +23,10 @@ static int s_status_calls;
 static int s_message_calls;
 static int s_zone_calls;
 static int s_network_calls;
+static char s_network_status[128];
+static bool s_network_status_is_null;
+static controller_config_durability_t s_config_durability =
+    CONTROLLER_CONFIG_DURABILITY_DURABLE;
 static int s_artwork_calls;
 static int s_volume_calls;
 static int s_battery_calls;
@@ -46,7 +51,9 @@ void eink_ui_set_zone_name(const char *name) {
     ++s_zone_calls;
 }
 void eink_ui_set_network_status(const char *status) {
-    assert(strcmp(status, "network") == 0);
+    s_network_status_is_null = status == NULL;
+    snprintf(s_network_status, sizeof(s_network_status), "%s",
+             status ? status : "");
     ++s_network_calls;
 }
 void eink_ui_post_zone_name(const char *name) {
@@ -108,6 +115,12 @@ void eink_ui_show_settings(void) {
     ++s_settings_calls;
 }
 void eink_ui_process(void) {}
+bool controller_config_snapshot(controller_config_snapshot_t *out) {
+    assert(out);
+    memset(out, 0, sizeof(*out));
+    out->durability = s_config_durability;
+    return true;
+}
 
 int main(void) {
     const char *names[] = {"one", "two"};
@@ -120,6 +133,18 @@ int main(void) {
     controller_presentation_set_message("message");
     controller_presentation_set_zone_name("zone");
     controller_presentation_set_network_status("network");
+    assert(strcmp(s_network_status, "network") == 0);
+    s_config_durability = CONTROLLER_CONFIG_DURABILITY_DEGRADED_COMMIT;
+    controller_presentation_set_network_status("WiFi: Connecting...");
+    assert(strcmp(s_network_status,
+                  "Settings saved but could\nnot be verified") == 0);
+    s_config_durability = CONTROLLER_CONFIG_DURABILITY_VOLATILE_RECOVERY;
+    controller_presentation_set_network_status(NULL);
+    assert(strcmp(s_network_status,
+                  "Settings storage unavailable;\nchanges may not survive") == 0);
+    s_config_durability = CONTROLLER_CONFIG_DURABILITY_DURABLE;
+    controller_presentation_set_network_status(NULL);
+    assert(s_network_status_is_null);
     controller_presentation_set_artwork("art");
     controller_presentation_show_volume_change(42.0f, 1.0f);
     controller_presentation_update_battery();
@@ -144,7 +169,7 @@ int main(void) {
     assert(s_status_calls == 1);
     assert(s_message_calls == 1);
     assert(s_zone_calls == 1);
-    assert(s_network_calls == 1);
+    assert(s_network_calls == 4);
     assert(s_artwork_calls == 1);
     assert(s_volume_calls == 1);
     assert(s_battery_calls == 1);

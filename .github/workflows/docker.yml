@@ -29,6 +29,48 @@ jobs:
           python3 scripts/check_controller_dependencies.py
           python3 scripts/check_controller_dependencies.py --self-test
           cc -std=c11 -Wall -Wextra -Werror -pedantic -pthread \
+            -DCONTROLLER_CONFIG_TEST \
+            -Icommon -Iinclude \
+            tests/test_controller_config.c \
+            common/controller_config.c \
+            -o /tmp/test-controller-config
+          /tmp/test-controller-config
+          cc -std=c11 -Wall -Wextra -Werror -pedantic -pthread \
+            -DCONTROLLER_CONFIG_TEST -DTEST_COMPILED_DEFAULTS \
+            '-DCONFIG_RK_DEFAULT_SSID="compiled-ssid"' \
+            '-DCONFIG_RK_DEFAULT_PASS="compiled-pass"' \
+            -Icommon -Iinclude \
+            tests/test_controller_config.c \
+            common/controller_config.c \
+            -o /tmp/test-controller-config-defaults
+          /tmp/test-controller-config-defaults
+          cc -std=c11 -Wall -Wextra -Werror -pedantic -pthread \
+            -fsanitize=address,undefined -fno-omit-frame-pointer \
+            -DCONTROLLER_CONFIG_TEST \
+            -Icommon -Iinclude \
+            tests/test_controller_config.c \
+            common/controller_config.c \
+            -o /tmp/test-controller-config-sanitized
+          ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
+            UBSAN_OPTIONS=halt_on_error=1 \
+            /tmp/test-controller-config-sanitized
+          cc -std=c11 -Wall -Wextra -Werror -pedantic -pthread \
+            -DTEST_DIAL_ADAPTER \
+            -Icommon -Iinclude -Iidf_app/main \
+            tests/test_platform_provisioning_adapter.c \
+            idf_app/main/platform_provisioning_dial.c \
+            idf_app/main/http_server_lifecycle.c \
+            -o /tmp/test-provisioning-adapter-dial
+          /tmp/test-provisioning-adapter-dial
+          cc -std=c11 -Wall -Wextra -Werror -pedantic \
+            -DTEST_FRAME_ADAPTER \
+            -Icommon -Iframe_app/main \
+            tests/test_platform_provisioning_adapter.c \
+            frame_app/main/platform_provisioning_frame.c \
+            -o /tmp/test-provisioning-adapter-frame
+          /tmp/test-provisioning-adapter-frame
+          sh tests/run_wifi_provisioning_lifecycle.sh
+          cc -std=c11 -Wall -Wextra -Werror -pedantic -pthread \
             -Icommon -Iinclude \
             tests/test_controller_input.c \
             common/controller_input.c \

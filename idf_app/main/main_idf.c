@@ -8,10 +8,10 @@
 #include "platform/platform_http.h"
 #include "platform/platform_input.h"
 #include "platform/platform_mdns.h"
-#include "platform/platform_storage.h"
 #include "platform/platform_time.h"
 #include "platform_display_idf.h"
 #include "bridge_client.h"
+#include "controller_config.h"
 #include "ui.h"
 #include "ui_network.h"
 #include "wifi_manager.h"
@@ -25,6 +25,7 @@
 #include <nvs_flash.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <stdatomic.h>
 
 static const char *TAG = "main";
 
@@ -36,11 +37,25 @@ static TaskHandle_t g_ui_task_handle = NULL;
 
 // Deferred operations flags (set in event handler, processed in UI task)
 static volatile bool s_ota_check_pending = false;
-static volatile bool s_config_server_start_pending = false;
-static volatile bool s_config_server_stop_pending = false;
+/* These cross the default event-loop/UI-task boundary.  AP teardown wins over
+ * a stale STA start request. */
+static atomic_bool s_config_server_start_pending = ATOMIC_VAR_INIT(false);
+static atomic_bool s_config_server_stop_pending = ATOMIC_VAR_INIT(false);
 static volatile bool s_mdns_init_pending = false;
 static volatile bool s_ble_init_pending = false;
 static bool s_ble_initialized = false;
+
+static void show_config_durability_diagnostic(void) {
+    controller_config_snapshot_t config = {0};
+    if (!controller_config_snapshot(&config)) {
+        return;
+    }
+    if (config.durability == CONTROLLER_CONFIG_DURABILITY_DEGRADED_COMMIT) {
+        ui_set_network_status("Settings saved but could not be verified");
+    } else if (config.durability == CONTROLLER_CONFIG_DURABILITY_VOLATILE_RECOVERY) {
+        ui_set_network_status("Settings storage unavailable; changes may not survive");
+    }
+}
 
 // WiFi retry message alternation
 static esp_timer_handle_t s_wifi_msg_timer = NULL;
@@ -110,7 +125,8 @@ void rk_net_evt_cb(rk_net_evt_t evt, const char *ip_opt) {
         // Defer heavy operations to UI task (sys_evt has limited stack)
         s_mdns_init_pending = true;  // mDNS needs network up first
         s_ota_check_pending = true;
-        s_config_server_start_pending = true;
+        atomic_store_explicit(&s_config_server_start_pending, true,
+                              memory_order_release);
         s_ble_init_pending = true;
         break;
 
@@ -135,7 +151,10 @@ void rk_net_evt_cb(rk_net_evt_t evt, const char *ip_opt) {
         ui_update("hiphi-dial-setup", "Connect to WiFi:", false, 0.0f, 0.0f, 100.0f, 1.0f, 0, 0);
         ui_set_zone_name("WiFi Setup");
         bridge_client_set_network_ready(false);
-        s_config_server_stop_pending = true;  // Stop config server in AP mode
+        atomic_store_explicit(&s_config_server_start_pending, false,
+                              memory_order_release);
+        atomic_store_explicit(&s_config_server_stop_pending, true,
+                              memory_order_release);  // Stop config server in AP mode
         break;
 
     case RK_NET_EVT_AP_STOPPED:
@@ -255,13 +274,14 @@ static void ui_loop_task(void *arg) {
                 s_ble_initialized = ble_hid_host_dial_start();
             }
         }
-        if (s_config_server_start_pending) {
-            s_config_server_start_pending = false;
-            config_server_start();
-        }
-        if (s_config_server_stop_pending) {
-            s_config_server_stop_pending = false;
+        if (atomic_exchange_explicit(&s_config_server_stop_pending, false,
+                                     memory_order_acq_rel)) {
             config_server_stop();
+        }
+        if (atomic_exchange_explicit(&s_config_server_start_pending, false,
+                                     memory_order_acq_rel) &&
+            !wifi_mgr_is_ap_mode()) {
+            config_server_start();
         }
 
         // Yield to lower priority tasks including IDLE
@@ -338,6 +358,7 @@ void app_main(void) {
     // Start application logic
     ESP_LOGI(TAG, "Starting app...");
     app_entry();
+    show_config_durability_diagnostic();
 
     // Start WiFi AFTER UI task is running (WiFi event callbacks use lv_async_call)
     // Always start WiFi - we always boot into Roon mode now

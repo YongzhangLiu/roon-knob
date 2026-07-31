@@ -338,4 +338,184 @@ static inline bool rk_cfg_normalize_wifi(rk_cfg_t *cfg) {
     }
     return changed;
 }
+
+/*
+ * Make every persisted string safe before a helper reads it and normalize the
+ * complete V3 compatibility DTO. This deliberately keeps the namespace, key,
+ * field order, and field types unchanged; it only produces a deterministic
+ * in-memory representation for a same-device candidate.
+ */
+static inline bool rk_cfg_terminate_string(char *value, size_t capacity) {
+    if (!value || capacity == 0) {
+        return false;
+    }
+    bool changed = value[capacity - 1] != '\0';
+    value[capacity - 1] = '\0';
+    return changed;
+}
+
+static inline bool rk_cfg_normalize_v3(rk_cfg_t *cfg) {
+    if (!cfg) {
+        return false;
+    }
+
+    bool changed = false;
+    if (cfg->cfg_ver != RK_CFG_CURRENT_VER) {
+        cfg->cfg_ver = RK_CFG_CURRENT_VER;
+        changed = true;
+    }
+
+    changed |= rk_cfg_terminate_string(cfg->ssid, sizeof(cfg->ssid));
+    changed |= rk_cfg_terminate_string(cfg->pass, sizeof(cfg->pass));
+    changed |= rk_cfg_terminate_string(cfg->bridge_base,
+                                        sizeof(cfg->bridge_base));
+    changed |= rk_cfg_terminate_string(cfg->zone_id, sizeof(cfg->zone_id));
+    changed |= rk_cfg_terminate_string(cfg->knob_name, sizeof(cfg->knob_name));
+    changed |= rk_cfg_terminate_string(cfg->config_sha,
+                                        sizeof(cfg->config_sha));
+    for (size_t i = 0; i < RK_MAX_WIFI; ++i) {
+        changed |= rk_cfg_terminate_string(cfg->wifi[i].ssid,
+                                            sizeof(cfg->wifi[i].ssid));
+        changed |= rk_cfg_terminate_string(cfg->wifi[i].pass,
+                                            sizeof(cfg->wifi[i].pass));
+    }
+
+    if (rk_cfg_normalize_wifi(cfg)) {
+        changed = true;
+    }
+    for (size_t i = cfg->wifi_count; i < RK_MAX_WIFI; ++i) {
+        rk_wifi_entry_t empty = {0};
+        if (memcmp(&cfg->wifi[i], &empty, sizeof(empty)) != 0) {
+            cfg->wifi[i] = empty;
+            changed = true;
+        }
+    }
+
+    size_t bridge_len = strlen(cfg->bridge_base);
+    while (bridge_len > 0 &&
+           (cfg->bridge_base[bridge_len - 1] == '/' ||
+            cfg->bridge_base[bridge_len - 1] == ' ' ||
+            cfg->bridge_base[bridge_len - 1] == '\t' ||
+            cfg->bridge_base[bridge_len - 1] == '\n' ||
+            cfg->bridge_base[bridge_len - 1] == '\r')) {
+        cfg->bridge_base[--bridge_len] = '\0';
+        changed = true;
+    }
+    return changed;
+}
+
+/*
+ * Decode a device-local raw compatibility blob into the current V3 candidate.
+ * The caller owns the later persistence decision. Keeping this transformation
+ * common makes Dial and Frame upgrades byte-for-byte compatible without
+ * allowing a read operation to write NVS as a side effect.
+ */
+static inline void rk_cfg_set_storage_defaults(rk_cfg_t *cfg) {
+    if (!cfg) {
+        return;
+    }
+    *cfg = (rk_cfg_t){0};
+    rk_cfg_set_display_defaults(cfg);
+    cfg->cfg_ver = RK_CFG_CURRENT_VER;
+}
+
+static inline bool rk_cfg_prepare_storage_read(rk_cfg_t *cfg,
+                                               size_t stored_len) {
+    if (!cfg) {
+        return false;
+    }
+
+    bool needs_persist = false;
+    if (stored_len == RK_CFG_V1_SIZE && cfg->cfg_ver == 1) {
+        (void)rk_cfg_terminate_string(cfg->ssid, sizeof(cfg->ssid));
+        (void)rk_cfg_terminate_string(cfg->pass, sizeof(cfg->pass));
+        rk_cfg_set_display_defaults(cfg);
+        if (cfg->ssid[0]) {
+            (void)rk_cfg_add_wifi(cfg, cfg->ssid, cfg->pass);
+        }
+        cfg->cfg_ver = RK_CFG_CURRENT_VER;
+        needs_persist = true;
+    } else if (stored_len == RK_CFG_V2_SIZE && cfg->cfg_ver == 2) {
+        (void)rk_cfg_terminate_string(cfg->ssid, sizeof(cfg->ssid));
+        (void)rk_cfg_terminate_string(cfg->pass, sizeof(cfg->pass));
+        if (cfg->ssid[0]) {
+            (void)rk_cfg_add_wifi(cfg, cfg->ssid, cfg->pass);
+        }
+        cfg->cfg_ver = RK_CFG_CURRENT_VER;
+        needs_persist = true;
+    } else if (stored_len != sizeof(*cfg)) {
+        rk_cfg_set_storage_defaults(cfg);
+        needs_persist = true;
+    }
+
+    return rk_cfg_normalize_v3(cfg) || needs_persist;
+}
+
+/*
+ * Copy every named V3 field into zero-filled storage. This makes comparison
+ * independent of compiler padding and irrelevant bytes after string terminators
+ * while preserving the exact persisted field layout.
+ */
+static inline bool rk_cfg_canonicalize_v3(rk_cfg_t *out, const rk_cfg_t *in) {
+    if (!out || !in) {
+        return false;
+    }
+
+    rk_cfg_t normalized = *in;
+    (void)rk_cfg_normalize_v3(&normalized);
+    *out = (rk_cfg_t){0};
+
+    rk_strlcpy(out->ssid, normalized.ssid, sizeof(out->ssid));
+    rk_strlcpy(out->pass, normalized.pass, sizeof(out->pass));
+    rk_strlcpy(out->bridge_base, normalized.bridge_base,
+               sizeof(out->bridge_base));
+    rk_strlcpy(out->zone_id, normalized.zone_id, sizeof(out->zone_id));
+    out->cfg_ver = normalized.cfg_ver;
+    rk_strlcpy(out->knob_name, normalized.knob_name, sizeof(out->knob_name));
+    rk_strlcpy(out->config_sha, normalized.config_sha, sizeof(out->config_sha));
+
+    out->rotation_charging = normalized.rotation_charging;
+    out->rotation_not_charging = normalized.rotation_not_charging;
+    out->art_mode_charging_enabled = normalized.art_mode_charging_enabled;
+    out->art_mode_charging_timeout_sec =
+        normalized.art_mode_charging_timeout_sec;
+    out->art_mode_battery_enabled = normalized.art_mode_battery_enabled;
+    out->art_mode_battery_timeout_sec =
+        normalized.art_mode_battery_timeout_sec;
+    out->dim_charging_enabled = normalized.dim_charging_enabled;
+    out->dim_charging_timeout_sec = normalized.dim_charging_timeout_sec;
+    out->dim_battery_enabled = normalized.dim_battery_enabled;
+    out->dim_battery_timeout_sec = normalized.dim_battery_timeout_sec;
+    out->sleep_charging_enabled = normalized.sleep_charging_enabled;
+    out->sleep_charging_timeout_sec = normalized.sleep_charging_timeout_sec;
+    out->sleep_battery_enabled = normalized.sleep_battery_enabled;
+    out->sleep_battery_timeout_sec = normalized.sleep_battery_timeout_sec;
+    out->deep_sleep_charging_enabled = normalized.deep_sleep_charging_enabled;
+    out->deep_sleep_charging_timeout_sec =
+        normalized.deep_sleep_charging_timeout_sec;
+    out->deep_sleep_battery_enabled = normalized.deep_sleep_battery_enabled;
+    out->deep_sleep_battery_timeout_sec =
+        normalized.deep_sleep_battery_timeout_sec;
+    out->wifi_power_save_enabled = normalized.wifi_power_save_enabled;
+    out->cpu_freq_scaling_enabled = normalized.cpu_freq_scaling_enabled;
+    out->sleep_poll_stopped_sec = normalized.sleep_poll_stopped_sec;
+    out->bridge_from_mdns = normalized.bridge_from_mdns;
+    for (size_t i = 0; i < RK_MAX_WIFI; ++i) {
+        rk_strlcpy(out->wifi[i].ssid, normalized.wifi[i].ssid,
+                   sizeof(out->wifi[i].ssid));
+        rk_strlcpy(out->wifi[i].pass, normalized.wifi[i].pass,
+                   sizeof(out->wifi[i].pass));
+    }
+    out->wifi_count = normalized.wifi_count;
+    return true;
+}
+
+static inline bool rk_cfg_v3_equal(const rk_cfg_t *left, const rk_cfg_t *right) {
+    rk_cfg_t left_canonical;
+    rk_cfg_t right_canonical;
+    return rk_cfg_canonicalize_v3(&left_canonical, left) &&
+           rk_cfg_canonicalize_v3(&right_canonical, right) &&
+           memcmp(&left_canonical, &right_canonical,
+                  sizeof(left_canonical)) == 0;
+}
 _Static_assert(sizeof(rk_cfg_t) == 570, "rk_cfg_t size changed - update migration sizes");

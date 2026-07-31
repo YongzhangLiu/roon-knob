@@ -26,6 +26,15 @@ ANGLE_INCLUDE_RE = re.compile(r"^\s*#\s*include\s*<([^>]+)>", re.MULTILINE)
 MACRO_INCLUDE_RE = re.compile(
     r'^\s*#\s*include\s+(?!["<])(?P<value>\S+)', re.MULTILINE
 )
+RAW_STORAGE_API_RE = re.compile(
+    r"\bplatform_storage_(?:read|write|defaults)\s*\("
+)
+RAW_STORAGE_ALLOWED = {
+    "common/controller_config.c",
+    "common/platform/platform_storage.h",
+    "idf_app/main/platform_storage_idf.c",
+    "frame_app/main/platform_storage_frame.c",
+}
 SRC_FILES_RE = re.compile(
     r"set\s*\(\s*SRC_FILES(?P<body>.*?)\n\s*\)", re.DOTALL
 )
@@ -285,6 +294,25 @@ def grandfathered_edges(policy: dict) -> dict[Edge, dict]:
     return grandfathered
 
 
+def authorized_forbidden_edges(policy: dict) -> dict[Edge, dict]:
+    """Exact permanent boundary owners allowed to match a forbidden rule."""
+    authorized: dict[Edge, dict] = {}
+    expected = expected_edges(policy)
+    for item in policy.get("authorized_forbidden_edges", []):
+        edge = edge_from_key(item["edge"])
+        if edge in authorized:
+            raise ValueError(f"duplicate authorized forbidden edge: {edge.key}")
+        if edge not in expected:
+            raise ValueError(
+                f"authorized forbidden edge is not expected: {edge.key}"
+            )
+        for field in ("owner", "reason"):
+            if not item.get(field):
+                raise ValueError(f"{edge.key}: {field} is required")
+        authorized[edge] = item
+    return authorized
+
+
 def forbidden_rules_for(edge: Edge, policy: dict) -> list[str]:
     matches: list[str] = []
     for rule in policy["forbidden_rules"]:
@@ -302,7 +330,13 @@ def forbidden_rules_for(edge: Edge, policy: dict) -> list[str]:
 def validate(policy: dict, observed: set[Edge]) -> list[str]:
     expected = expected_edges(policy)
     grandfathered = grandfathered_edges(policy)
+    authorized = authorized_forbidden_edges(policy)
     errors: list[str] = []
+
+    for edge in sorted(set(grandfathered) & set(authorized)):
+        errors.append(
+            f"edge cannot be both grandfathered and permanently authorized: {edge.key}"
+        )
 
     rule_names = [rule["name"] for rule in policy["forbidden_rules"]]
     if len(set(rule_names)) != len(rule_names):
@@ -314,14 +348,14 @@ def validate(policy: dict, observed: set[Edge]) -> list[str]:
         errors.append(f"stale policy edge: {edge.key}")
     for edge in sorted(expected):
         forbidden = forbidden_rules_for(edge, policy)
-        if forbidden and edge not in grandfathered:
+        if forbidden and edge not in grandfathered and edge not in authorized:
             errors.append(
                 f"forbidden edge lacks ownership metadata ({','.join(forbidden)}): "
                 f"{edge.key}"
             )
-        if not forbidden and edge in grandfathered:
+        if not forbidden and (edge in grandfathered or edge in authorized):
             errors.append(
-                f"grandfathered edge matches no forbidden rule: {edge.key}"
+                f"owned exception matches no forbidden rule: {edge.key}"
             )
     return errors
 
@@ -329,6 +363,31 @@ def validate(policy: dict, observed: set[Edge]) -> list[str]:
 def print_edges(edges: Iterable[Edge]) -> None:
     for edge in sorted(edges):
         print(edge.key)
+
+
+def raw_storage_api_errors(
+    root: Path = ROOT, extra_sources: Iterable[Path] = ()
+) -> list[str]:
+    """Reject raw configuration persistence references outside its owner/ports."""
+    candidates: set[Path] = set(extra_sources)
+    for source_root in (root / "common", root / "idf_app" / "main",
+                        root / "frame_app" / "main"):
+        for suffix in ("*.c", "*.h"):
+            candidates.update(source_root.rglob(suffix))
+
+    errors: list[str] = []
+    for path in sorted(candidates):
+        relative = relative_path(path, root)
+        if relative in RAW_STORAGE_ALLOWED:
+            continue
+        text = normalize_preprocessor_text(path.read_text(encoding="utf-8"))
+        for match in RAW_STORAGE_API_RE.finditer(text):
+            line = text.count("\n", 0, match.start()) + 1
+            errors.append(
+                f"raw storage API is owner-private: {relative}:{line}:"
+                f"{match.group(0)[:-1]}"
+            )
+    return errors
 
 
 def run_negative_fixture(policy: dict) -> None:
@@ -354,6 +413,17 @@ def run_negative_fixture(policy: dict) -> None:
         raise AssertionError(
             "negative fixture was not rejected with the expected edge: "
             + "; ".join(errors)
+        )
+
+    raw_errors = raw_storage_api_errors(extra_sources=[source])
+    expected_raw_prefix = (
+        "raw storage API is owner-private: "
+        f"{relative_path(source)}:"
+    )
+    if not any(error.startswith(expected_raw_prefix) for error in raw_errors):
+        raise AssertionError(
+            "negative fixture could bypass raw-storage ownership: "
+            + "; ".join(raw_errors)
         )
 
     ownerless_policy = copy.deepcopy(policy)
@@ -404,16 +474,18 @@ def main() -> int:
             run_negative_fixture(policy)
             return 0
 
-        errors = validate(policy, observed)
+        errors = validate(policy, observed) + raw_storage_api_errors()
         if errors:
             for error in errors:
                 print(error, file=sys.stderr)
             return 1
         grandfathered = len(grandfathered_edges(policy))
-        allowed = len(policy["expected_edges"]) - grandfathered
+        authorized = len(authorized_forbidden_edges(policy))
+        allowed = len(policy["expected_edges"]) - grandfathered - authorized
         print(
             "controller dependency policy passed: "
-            f"{allowed} allowed, {grandfathered} grandfathered"
+            f"{allowed} allowed, {authorized} boundary-owned, "
+            f"{grandfathered} grandfathered"
         )
         return 0
     except (OSError, ValueError, KeyError, json.JSONDecodeError, AssertionError) as err:

@@ -3,7 +3,22 @@
 // while shared controller code no longer references ui.h directly.
 
 #include "controller_presentation.h"
+#include "controller_config.h"
 #include "ui.h"
+
+static const char *config_durability_warning(void) {
+    controller_config_snapshot_t config;
+    if (!controller_config_snapshot(&config)) {
+        return NULL;
+    }
+    if (config.durability == CONTROLLER_CONFIG_DURABILITY_DEGRADED_COMMIT) {
+        return "Settings saved but could not be verified";
+    }
+    if (config.durability == CONTROLLER_CONFIG_DURABILITY_VOLATILE_RECOVERY) {
+        return "Settings storage unavailable; changes may not survive";
+    }
+    return NULL;
+}
 
 void controller_presentation_update(const char *line1, const char *line2, const char *line3,
                                      bool playing, float volume, float volume_min,
@@ -26,7 +41,8 @@ void controller_presentation_set_zone_name(const char *zone_name) {
 }
 
 void controller_presentation_set_network_status(const char *status) {
-    ui_set_network_status(status);
+    const char *warning = config_durability_warning();
+    ui_set_network_status(warning ? warning : status);
 }
 
 void controller_presentation_set_artwork(const char *image_key) {

@@ -16,35 +16,38 @@ static const char *TAG = "platform_storage";
 static const char *NAMESPACE = "rk_cfg";
 static const char *KEY = "cfg";
 
-static void ensure_version(rk_cfg_t *cfg) {
-    if (!cfg) return;
-    if (cfg->cfg_ver == 0) {
-        cfg->cfg_ver = RK_CFG_CURRENT_VER;
-    }
-}
-
-static void strip_trailing_slashes(char *url) {
-    if (!url) return;
-    size_t len = strlen(url);
-    while (len > 0 && (url[len-1] == '/' || url[len-1] == ' ' ||
-                       url[len-1] == '\t' || url[len-1] == '\n' || url[len-1] == '\r')) {
-        url[--len] = '\0';
-    }
-}
-
 static esp_err_t open_ns(nvs_handle_t *handle, nvs_open_mode_t mode) {
     return nvs_open(NAMESPACE, mode, handle);
 }
 
-bool platform_storage_load(rk_cfg_t *out) {
-    if (!out) return false;
+static void apply_storage_defaults(rk_cfg_t *out) {
+    rk_cfg_set_storage_defaults(out);
+}
+
+bool platform_storage_read(rk_cfg_t *out,
+                           platform_storage_read_result_t *out_result) {
+    if (out_result) {
+        *out_result = (platform_storage_read_result_t){
+            .state = PLATFORM_STORAGE_READ_ERROR,
+            .needs_persist = false,
+        };
+    }
+    if (!out) {
+        return false;
+    }
+
+    memset(out, 0, sizeof(*out));
     esp_err_t err;
     nvs_handle_t handle;
     err = open_ns(&handle, NVS_READONLY);
     if (err != ESP_OK) {
-        if (err != ESP_ERR_NVS_NOT_FOUND) {
-            ESP_LOGW(TAG, "nvs open failed: %s", esp_err_to_name(err));
+        if (err == ESP_ERR_NVS_NOT_FOUND) {
+            if (out_result) {
+                out_result->state = PLATFORM_STORAGE_READ_EMPTY;
+            }
+            return true;
         }
+        ESP_LOGW(TAG, "nvs open failed: %s", esp_err_to_name(err));
         return false;
     }
 
@@ -52,11 +55,16 @@ bool platform_storage_load(rk_cfg_t *out) {
     err = nvs_get_blob(handle, KEY, NULL, &stored_len);
     if (err != ESP_OK) {
         nvs_close(handle);
-        memset(out, 0, sizeof(*out));
+        if (err == ESP_ERR_NVS_NOT_FOUND) {
+            if (out_result) {
+                out_result->state = PLATFORM_STORAGE_READ_EMPTY;
+            }
+            return true;
+        }
+        ESP_LOGW(TAG, "nvs size query failed: %s", esp_err_to_name(err));
         return false;
     }
 
-    memset(out, 0, sizeof(*out));
     size_t read_len = sizeof(*out);  // Buffer capacity, not stored blob size
     err = nvs_get_blob(handle, KEY, out, &read_len);
     nvs_close(handle);
@@ -65,60 +73,49 @@ bool platform_storage_load(rk_cfg_t *out) {
         if (err == ESP_ERR_NVS_INVALID_LENGTH) {
             ESP_LOGW(TAG, "Config blob too large for struct (stored=%d, max=%d)",
                      (int)stored_len, (int)sizeof(*out));
+            apply_storage_defaults(out);
+            if (out_result) {
+                out_result->state = PLATFORM_STORAGE_READ_RECOVERED;
+                out_result->needs_persist = true;
+            }
+            return true;
         }
+        ESP_LOGW(TAG, "nvs read failed: %s", esp_err_to_name(err));
         memset(out, 0, sizeof(*out));
         return false;
     }
 
-    bool needs_persist = false;
-
     // Handle this Frame's local config upgrade.
     if (stored_len == RK_CFG_V1_SIZE && out->cfg_ver == 1) {
         ESP_LOGI(TAG, "Upgrading this Frame's config from v1 to v3");
-        rk_cfg_set_display_defaults(out);
-        if (out->ssid[0]) {
-            rk_cfg_add_wifi(out, out->ssid, out->pass);
-        }
-        out->cfg_ver = RK_CFG_CURRENT_VER;
-        needs_persist = true;
     } else if (stored_len == RK_CFG_V2_SIZE && out->cfg_ver == 2) {
         ESP_LOGI(TAG, "Upgrading this Frame's config from v2 to v3");
-        if (out->ssid[0]) {
-            rk_cfg_add_wifi(out, out->ssid, out->pass);
-        }
-        out->cfg_ver = RK_CFG_CURRENT_VER;
-        needs_persist = true;
     } else if (stored_len != sizeof(*out)) {
         ESP_LOGW(TAG, "Config size mismatch (stored=%d, expected=%d)", (int)stored_len, (int)sizeof(*out));
-        memset(out, 0, sizeof(*out));
-        rk_cfg_set_display_defaults(out);
-        out->cfg_ver = RK_CFG_CURRENT_VER;
-        needs_persist = true;
     }
 
-    ensure_version(out);
-    if (rk_cfg_normalize_wifi(out)) {
-        needs_persist = true;
-    }
-    strip_trailing_slashes(out->bridge_base);
+    bool needs_persist = rk_cfg_prepare_storage_read(out, stored_len);
 
     ESP_LOGI(TAG, "Loaded config: ssid='%s' bridge='%s' zone='%s' ver=%d",
              out->ssid[0] ? out->ssid : "(empty)",
              out->bridge_base[0] ? out->bridge_base : "(empty)",
              out->zone_id[0] ? out->zone_id : "(empty)", out->cfg_ver);
-    if (needs_persist && !platform_storage_save(out)) {
-        ESP_LOGE(TAG, "Could not persist upgraded/repaired Frame config");
-        return false;
+    if (out_result) {
+        out_result->state = needs_persist ? PLATFORM_STORAGE_READ_RECOVERED
+                                          : PLATFORM_STORAGE_READ_VALID;
+        out_result->needs_persist = needs_persist;
     }
     return true;
 }
 
-bool platform_storage_save(const rk_cfg_t *in) {
-    if (!in) return false;
-    rk_cfg_t copy = *in;
-    ensure_version(&copy);
-    (void)rk_cfg_normalize_wifi(&copy);
-    strip_trailing_slashes(copy.bridge_base);
+platform_storage_write_result_t platform_storage_write(const rk_cfg_t *in) {
+    if (!in) {
+        return PLATFORM_STORAGE_NOT_COMMITTED;
+    }
+    rk_cfg_t copy;
+    if (!rk_cfg_canonicalize_v3(&copy, in)) {
+        return PLATFORM_STORAGE_NOT_COMMITTED;
+    }
 
     ESP_LOGI(TAG, "Saving config: ssid='%s' bridge='%s' zone='%s' ver=%d",
              copy.ssid[0] ? copy.ssid : "(empty)",
@@ -130,57 +127,40 @@ bool platform_storage_save(const rk_cfg_t *in) {
     err = open_ns(&handle, NVS_READWRITE);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "nvs open rw failed: %s", esp_err_to_name(err));
-        return false;
+        return PLATFORM_STORAGE_NOT_COMMITTED;
     }
     err = nvs_set_blob(handle, KEY, &copy, sizeof(copy));
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "nvs_set_blob failed: %s", esp_err_to_name(err));
         nvs_close(handle);
-        return false;
+        return PLATFORM_STORAGE_NOT_COMMITTED;
     }
     err = nvs_commit(handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "nvs_commit failed: %s", esp_err_to_name(err));
         nvs_close(handle);
-        return false;
+        return PLATFORM_STORAGE_NOT_COMMITTED;
     }
     nvs_close(handle);
 
-    // Verify by reading back
     rk_cfg_t verify = {0};
-    if (!platform_storage_load(&verify)) {
+    platform_storage_read_result_t verify_result;
+    if (!platform_storage_read(&verify, &verify_result) ||
+        verify_result.state != PLATFORM_STORAGE_READ_VALID ||
+        verify_result.needs_persist) {
         ESP_LOGE(TAG, "VERIFY FAILED: Could not read back saved config!");
-        return false;
+        return PLATFORM_STORAGE_COMMITTED_UNVERIFIED;
     }
-    if (strcmp(verify.ssid, copy.ssid) != 0) {
-        ESP_LOGE(TAG, "VERIFY FAILED: SSID mismatch!");
-        return false;
-    }
-    if (strcmp(verify.bridge_base, copy.bridge_base) != 0) {
-        ESP_LOGE(TAG, "VERIFY FAILED: bridge_base mismatch!");
-        return false;
-    }
-    if (strcmp(verify.zone_id, copy.zone_id) != 0) {
-        ESP_LOGE(TAG, "VERIFY FAILED: zone_id mismatch!");
-        return false;
+    if (!rk_cfg_v3_equal(&verify, &copy)) {
+        ESP_LOGE(TAG, "VERIFY FAILED: full V3 candidate mismatch!");
+        return PLATFORM_STORAGE_COMMITTED_UNVERIFIED;
     }
 
-    return true;
+    return PLATFORM_STORAGE_COMMITTED_VERIFIED;
 }
 
 void platform_storage_defaults(rk_cfg_t *out) {
     if (!out) return;
-    memset(out, 0, sizeof(*out));
-    rk_cfg_set_display_defaults(out);
-    out->cfg_ver = RK_CFG_CURRENT_VER;
+    apply_storage_defaults(out);
     ESP_LOGI(TAG, "Applied defaults");
-}
-
-void platform_storage_reset_wifi_only(rk_cfg_t *cfg) {
-    if (!cfg) return;
-    cfg->ssid[0] = '\0';
-    cfg->pass[0] = '\0';
-    memset(cfg->wifi, 0, sizeof(cfg->wifi));
-    cfg->wifi_count = 0;
-    platform_storage_save(cfg);
 }
