@@ -2,7 +2,7 @@
 // Boot sequence: NVS → PMIC → e-ink display → eink_ui_init → input → UI loop → app_entry → WiFi
 
 #include "app.h"
-#include "ble_remote.h"
+#include "ble_hid_host_frame.h"
 #include "bridge_client.h"
 #include "captive_portal.h"
 #include "eink_display.h"
@@ -119,7 +119,7 @@ static void ui_loop_task(void *arg) {
       s_ble_init_pending = false;
       if (!s_ble_initialized) {
         ESP_LOGI(TAG, "Initializing BLE remote...");
-        s_ble_initialized = ble_remote_init();
+        s_ble_initialized = ble_hid_host_frame_start();
         if (!s_ble_initialized) {
           ESP_LOGE(TAG, "BLE remote initialization failed");
         }

@@ -47,6 +47,7 @@ struct ui_net_widgets {
     lv_obj_t *ip_value;
     lv_obj_t *version_label;
     lv_obj_t *status_label;
+    lv_obj_t *ble_value;
     lv_obj_t *wifi_form;
     lv_obj_t *wifi_ssid;
     lv_obj_t *wifi_pass;
@@ -56,6 +57,7 @@ struct ui_net_widgets {
 
 static struct ui_net_widgets s_widgets;
 static lv_obj_t *s_reset_confirm_dialog = NULL;
+static char s_ble_status[96] = "Unavailable";
 
 // Forward declarations
 static void set_status_text(const char *msg);
@@ -361,6 +363,17 @@ static void ensure_panel(void) {
     lv_obj_set_width(s_widgets.bridge_value, 120);  // Constrain width to enable scroll
     lv_label_set_long_mode(s_widgets.bridge_value, LV_LABEL_LONG_SCROLL_CIRCULAR);
 
+    lv_obj_t *ble_row = lv_obj_create(s_widgets.panel);
+    lv_obj_set_size(ble_row, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(ble_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_all(ble_row, 4, 0);
+    lv_obj_clear_flag(ble_row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_label_set_text(lv_label_create(ble_row), "BLE:");
+    s_widgets.ble_value = lv_label_create(ble_row);
+    lv_obj_set_width(s_widgets.ble_value, 140);
+    lv_label_set_long_mode(s_widgets.ble_value, LV_LABEL_LONG_SCROLL_CIRCULAR);
+    lv_label_set_text(s_widgets.ble_value, s_ble_status);
+
     s_widgets.status_label = lv_label_create(s_widgets.panel);
     lv_label_set_text(s_widgets.status_label, "Wi-Fi idle");
 
@@ -470,6 +483,14 @@ void ui_network_on_event(rk_net_evt_t evt, const char *ip_opt) {
     lv_async_call(apply_evt_async, msg);
 }
 
+void ui_network_set_ble_status(const char *status) {
+    const char *value = status && status[0] ? status : "Unavailable";
+    copy_str(s_ble_status, sizeof(s_ble_status), value);
+    if (s_widgets.ble_value) {
+        lv_label_set_text(s_widgets.ble_value, s_ble_status);
+    }
+}
+
 void ui_show_settings(void) {
     ensure_panel();
     refresh_labels();
@@ -503,6 +524,10 @@ void ui_network_register_menu(void) {
 void ui_network_on_event(rk_net_evt_t evt, const char *ip_opt) {
     (void)evt;
     (void)ip_opt;
+}
+
+void ui_network_set_ble_status(const char *status) {
+    (void)status;
 }
 
 void ui_show_settings(void) {

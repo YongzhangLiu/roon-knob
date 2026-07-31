@@ -15,6 +15,7 @@ set(SRC_FILES
     "battery.c"
     "ota_update.c"
     "controller_presentation_dial.c"
+    "ble_hid_host_dial.c"
     "font_manager.c"
     # Generated bitmap fonts (run scripts/generate_fonts.sh to regenerate)
     # Typography: Lato for metadata, Noto Sans for content (matches Roon's design)
@@ -27,6 +28,7 @@ set(SRC_FILES
     "fonts/lucide_battery_22.c"
     "../../common/app_main.c"
     "../../common/bridge_client.c"
+    "../../common/controller_ble_input.c"
     "../../common/controller_input.c"
     "../../common/wifi_manager.c"
     "../../common/ui.c"
@@ -67,6 +69,7 @@ idf_component_register(
         esp_adc
         app_update
         json
+        rk_ble_hid_host
 )
 
 set_property(TARGET ${COMPONENT_LIB} PROPERTY C_STANDARD 11)

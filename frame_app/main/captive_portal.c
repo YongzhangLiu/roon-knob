@@ -5,8 +5,9 @@
 #include "eink_ui.h"
 #include "wifi_manager.h"
 #include "bridge_client.h"
-#include "ble_remote.h"
+#include "rk_ble_hid_host.h"
 
+#include <esp_err.h>
 #include <esp_http_server.h>
 #include <esp_log.h>
 #include <esp_system.h>
@@ -18,6 +19,13 @@
 static const char *TAG = "captive_portal";
 
 static httpd_handle_t s_server = NULL;
+
+static esp_err_t send_conflict(httpd_req_t *req, const char *message) {
+  httpd_resp_set_status(req, "409 Conflict");
+  httpd_resp_set_type(req, "text/plain");
+  httpd_resp_sendstr(req, message ? message : "Request conflicts with BLE state");
+  return ESP_FAIL;
+}
 
 // Favicon data URI (same icon as unified-hifi-control)
 static const char *FAVICON_LINK =
@@ -633,13 +641,21 @@ static esp_err_t sta_zone_set_handler(httpd_req_t *req) {
 // ── STA-mode BLE config page (GET /ble) ─────────────────────────────────────
 
 static esp_err_t sta_ble_handler(httpd_req_t *req) {
-  bool connected = ble_remote_is_connected();
-  bool scanning = ble_remote_is_scanning();
-  char dev_name[64];
-  ble_remote_device_name(dev_name, sizeof(dev_name));
+  rk_ble_hid_host_status_t status = {0};
+  if (rk_ble_hid_host_status_copy(&status) != RK_BLE_HID_HOST_OK) {
+    httpd_resp_set_status(req, "503 Service Unavailable");
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_sendstr(req, "BLE media remote is unavailable");
+    return ESP_FAIL;
+  }
+  bool scanning = status.state == RK_BLE_HID_HOST_STATE_SCANNING;
+  const char *dev_name =
+      status.active_name[0] ? status.active_name : status.bonded_name;
 
-  ble_remote_device_t results[BLE_REMOTE_MAX_RESULTS];
-  int result_count = ble_remote_get_scan_results(results, BLE_REMOTE_MAX_RESULTS);
+  rk_ble_hid_host_device_t results[RK_BLE_HID_HOST_MAX_RESULTS];
+  uint32_t scan_generation = 0;
+  size_t result_count = rk_ble_hid_host_scan_results_copy(
+      results, RK_BLE_HID_HOST_MAX_RESULTS, &scan_generation);
 
   char bridge_url[128] = "";
   bridge_client_get_bridge_url(bridge_url, sizeof(bridge_url));
@@ -674,25 +690,53 @@ static esp_err_t sta_ble_handler(httpd_req_t *req) {
     esc_bridge_url[0] ? "' target='_blank'>Bridge Control</a>" : "");
   if (pos >= (int)html_size) pos = (int)html_size - 1;
 
+  pos += snprintf(html + pos, html_size - pos,
+    "<form method='POST' action='/api/ble-enable'>"
+    "<input type='hidden' name='enabled' value='%d'>"
+    "<button type='submit' class='btn%s'>%s BLE Media Remote</button>"
+    "</form>",
+    status.enabled ? 0 : 1,
+    status.enabled ? " btn-danger" : "",
+    status.enabled ? "Disable" : "Enable");
+  if (pos >= (int)html_size) pos = (int)html_size - 1;
+
+  if (status.last_error != RK_BLE_HID_HOST_ERROR_NONE) {
+    pos += snprintf(html + pos, html_size - pos,
+      "<p class='status'>Last BLE error: <strong>%s</strong></p>",
+      rk_ble_hid_host_error_name(status.last_error));
+    if (pos >= (int)html_size) pos = (int)html_size - 1;
+  }
+
+  if (!status.enabled) {
+    pos += snprintf(html + pos, html_size - pos,
+      "<p class='status'>BLE media remote is disabled on this Frame.</p>"
+      "</div></body></html>");
+    if (pos >= (int)html_size) pos = (int)html_size - 1;
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_send(req, html, pos);
+    free(html);
+    return ESP_OK;
+  }
+
   // Current status
-  if (connected && dev_name[0]) {
+  if (status.connected && dev_name[0]) {
     char esc_name[128];
     html_escape(dev_name, esc_name, sizeof(esc_name));
     pos += snprintf(html + pos, html_size - pos,
       "<div class='device'>"
       "<span>Connected: <strong>%s</strong></span>"
       "<form method='POST' action='/api/ble-unpair'>"
-      "<button type='submit' class='btn btn-danger'>Unpair</button>"
+      "<button type='submit' class='btn btn-danger'>Forget</button>"
       "</form></div>",
       esc_name);
     if (pos >= (int)html_size) pos = (int)html_size - 1;
-  } else if (dev_name[0]) {
+  } else if (status.bonded && dev_name[0]) {
     char esc_name[128];
     html_escape(dev_name, esc_name, sizeof(esc_name));
     pos += snprintf(html + pos, html_size - pos,
       "<p class='status'>Paired with <strong>%s</strong> (disconnected, reconnecting...)</p>"
       "<form method='POST' action='/api/ble-unpair'>"
-      "<button type='submit' class='btn btn-danger'>Unpair</button>"
+      "<button type='submit' class='btn btn-danger'>Forget</button>"
       "</form>",
       esc_name);
     if (pos >= (int)html_size) pos = (int)html_size - 1;
@@ -723,17 +767,18 @@ static esp_err_t sta_ble_handler(httpd_req_t *req) {
   if (result_count > 0 && !scanning) {
     pos += snprintf(html + pos, html_size - pos, "<h2>Discovered Devices</h2>");
     if (pos >= (int)html_size) pos = (int)html_size - 1;
-    for (int i = 0; i < result_count; i++) {
+    for (size_t i = 0; i < result_count; i++) {
       char esc_name[128];
       html_escape(results[i].name, esc_name, sizeof(esc_name));
       pos += snprintf(html + pos, html_size - pos,
         "<div class='device'>"
         "<span>%s</span>"
         "<form method='POST' action='/api/ble-pair'>"
-        "<input type='hidden' name='idx' value='%d'>"
+        "<input type='hidden' name='idx' value='%u'>"
+        "<input type='hidden' name='generation' value='%lu'>"
         "<button type='submit' class='btn'>Pair</button>"
         "</form></div>",
-        esc_name, i);
+        esc_name, (unsigned)i, (unsigned long)scan_generation);
       if (pos >= (int)html_size) pos = (int)html_size - 1;
     }
   }
@@ -759,7 +804,10 @@ static esp_err_t sta_ble_handler(httpd_req_t *req) {
 
 static esp_err_t sta_ble_scan_handler(httpd_req_t *req) {
   ESP_LOGI(TAG, "Web UI: starting BLE scan");
-  ble_remote_scan_start();
+  rk_ble_hid_host_result_t result = rk_ble_hid_host_scan_start();
+  if (result != RK_BLE_HID_HOST_OK) {
+    return send_conflict(req, rk_ble_hid_host_result_name(result));
+  }
   // Redirect back after short delay to allow scan to start
   httpd_resp_set_status(req, "302 Found");
   httpd_resp_set_hdr(req, "Location", "/ble");
@@ -777,19 +825,45 @@ static esp_err_t sta_ble_pair_handler(httpd_req_t *req) {
   buf[received] = '\0';
 
   char idx_str[8] = {0};
+  char generation_str[16] = {0};
   if (!get_form_field(buf, "idx", idx_str, sizeof(idx_str))) {
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing idx");
     return ESP_FAIL;
   }
+  if (!get_form_field(buf, "generation", generation_str,
+                      sizeof(generation_str))) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing generation");
+    return ESP_FAIL;
+  }
 
-  char *endp;
-  int idx = (int)strtol(idx_str, &endp, 10);
-  if (endp == idx_str || *endp != '\0') {
+  char *endp = NULL;
+  long idx = strtol(idx_str, &endp, 10);
+  if (endp == idx_str || *endp != '\0' || idx < 0 ||
+      idx >= RK_BLE_HID_HOST_MAX_RESULTS) {
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid index");
     return ESP_FAIL;
   }
-  ESP_LOGI(TAG, "Web UI: pairing with device %d", idx);
-  ble_remote_pair(idx);
+
+  endp = NULL;
+  unsigned long requested_generation = strtoul(generation_str, &endp, 10);
+  if (endp == generation_str || *endp != '\0') {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid generation");
+    return ESP_FAIL;
+  }
+
+  rk_ble_hid_host_device_t results[RK_BLE_HID_HOST_MAX_RESULTS];
+  uint32_t current_generation = 0;
+  size_t count = rk_ble_hid_host_scan_results_copy(
+      results, RK_BLE_HID_HOST_MAX_RESULTS, &current_generation);
+  if ((size_t)idx >= count || requested_generation != current_generation) {
+    return send_conflict(req, "Scan results changed; scan again");
+  }
+
+  ESP_LOGI(TAG, "Web UI: pairing with device %ld", idx);
+  rk_ble_hid_host_result_t result = rk_ble_hid_host_pair(&results[idx]);
+  if (result != RK_BLE_HID_HOST_OK) {
+    return send_conflict(req, rk_ble_hid_host_result_name(result));
+  }
 
   httpd_resp_set_status(req, "302 Found");
   httpd_resp_set_hdr(req, "Location", "/ble");
@@ -798,8 +872,39 @@ static esp_err_t sta_ble_pair_handler(httpd_req_t *req) {
 }
 
 static esp_err_t sta_ble_unpair_handler(httpd_req_t *req) {
-  ESP_LOGI(TAG, "Web UI: unpairing BLE remote");
-  ble_remote_unpair();
+  ESP_LOGI(TAG, "Web UI: forgetting BLE remote");
+  rk_ble_hid_host_result_t result = rk_ble_hid_host_forget();
+  if (result != RK_BLE_HID_HOST_OK) {
+    return send_conflict(req, rk_ble_hid_host_result_name(result));
+  }
+
+  httpd_resp_set_status(req, "302 Found");
+  httpd_resp_set_hdr(req, "Location", "/ble");
+  httpd_resp_send(req, NULL, 0);
+  return ESP_OK;
+}
+
+static esp_err_t sta_ble_enable_handler(httpd_req_t *req) {
+  char buf[32] = {0};
+  int received = httpd_req_recv(req, buf, sizeof(buf) - 1);
+  if (received <= 0) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No data");
+    return ESP_FAIL;
+  }
+  buf[received] = '\0';
+
+  char enabled_str[4] = {0};
+  if (!get_form_field(buf, "enabled", enabled_str, sizeof(enabled_str)) ||
+      (strcmp(enabled_str, "0") != 0 && strcmp(enabled_str, "1") != 0)) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid enabled value");
+    return ESP_FAIL;
+  }
+
+  rk_ble_hid_host_result_t result =
+      rk_ble_hid_host_set_enabled(enabled_str[0] == '1');
+  if (result != RK_BLE_HID_HOST_OK) {
+    return send_conflict(req, rk_ble_hid_host_result_name(result));
+  }
 
   httpd_resp_set_status(req, "302 Found");
   httpd_resp_set_hdr(req, "Location", "/ble");
@@ -867,6 +972,9 @@ void captive_portal_start_sta(void) {
 
   httpd_uri_t ble_scan = {.uri = "/api/ble-scan", .method = HTTP_POST, .handler = sta_ble_scan_handler};
   httpd_register_uri_handler(s_server, &ble_scan);
+
+  httpd_uri_t ble_enable = {.uri = "/api/ble-enable", .method = HTTP_POST, .handler = sta_ble_enable_handler};
+  httpd_register_uri_handler(s_server, &ble_enable);
 
   httpd_uri_t ble_pair = {.uri = "/api/ble-pair", .method = HTTP_POST, .handler = sta_ble_pair_handler};
   httpd_register_uri_handler(s_server, &ble_pair);

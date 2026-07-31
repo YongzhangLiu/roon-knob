@@ -28,6 +28,25 @@ jobs:
           cc -std=c11 -Wall -Wextra -Werror \
             -Icommon tests/test_rk_cfg.c -o /tmp/test-rk-cfg
           /tmp/test-rk-cfg
+          cc -std=c11 -Wall -Wextra -Werror \
+            -Icomponents/rk_ble_hid_host/include \
+            tests/test_rk_ble_hid_usage.c \
+            components/rk_ble_hid_host/rk_ble_hid_report.c \
+            -o /tmp/test-rk-ble-hid-usage
+          /tmp/test-rk-ble-hid-usage
+          cc -std=c11 -Wall -Wextra -Werror \
+            -Icomponents/rk_ble_hid_host/include \
+            -Icomponents/rk_ble_hid_host \
+            tests/test_rk_ble_hid_policy.c \
+            components/rk_ble_hid_host/rk_ble_hid_policy.c \
+            -o /tmp/test-rk-ble-hid-policy
+          /tmp/test-rk-ble-hid-policy
+          cc -std=c11 -Wall -Wextra -Werror \
+            -Icomponents/rk_ble_hid_host/include \
+            tests/test_rk_ble_hid_stub.c \
+            components/rk_ble_hid_host/rk_ble_hid_host_stub.c \
+            -o /tmp/test-rk-ble-hid-stub
+          /tmp/test-rk-ble-hid-stub
 
   build-idf:
     name: build-idf
@@ -79,7 +98,13 @@ jobs:
             idf.py build;
             grep -Fx 'CONFIG_COMPILER_OPTIMIZATION_PERF=y' sdkconfig;
             ! grep -Fx 'CONFIG_COMPILER_OPTIMIZATION_DEBUG=y' sdkconfig;
-            grep -Fx 'CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096' sdkconfig
+            grep -Fx 'CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096' sdkconfig;
+            grep -Fx 'CONFIG_RK_BLE_HID_HOST=y' sdkconfig;
+            grep -Fx 'CONFIG_BT_ENABLED=y' sdkconfig;
+            grep -Fx 'CONFIG_BT_NIMBLE_ENABLED=y' sdkconfig;
+            grep -Fx 'CONFIG_BT_NIMBLE_NVS_PERSIST=y' sdkconfig;
+            grep -Fx 'CONFIG_BT_NIMBLE_SM_SC=y' sdkconfig;
+            grep -Fx 'CONFIG_BT_NIMBLE_HID_SERVICE=y' sdkconfig
 
       - name: Create merged flash image for web flashing
         run: |
@@ -148,8 +173,11 @@ jobs:
             grep -Fx 'CONFIG_COMPILER_OPTIMIZATION_PERF=y' sdkconfig;
             ! grep -Fx 'CONFIG_COMPILER_OPTIMIZATION_DEBUG=y' sdkconfig;
             grep -Fx 'CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096' sdkconfig;
+            grep -Fx 'CONFIG_RK_BLE_HID_HOST=y' sdkconfig;
             grep -Fx 'CONFIG_BT_ENABLED=y' sdkconfig;
             grep -Fx 'CONFIG_BT_NIMBLE_ENABLED=y' sdkconfig;
+            grep -Fx 'CONFIG_BT_NIMBLE_NVS_PERSIST=y' sdkconfig;
+            grep -Fx 'CONFIG_BT_NIMBLE_SM_SC=y' sdkconfig;
             grep -Fx 'CONFIG_BT_NIMBLE_HID_SERVICE=y' sdkconfig;
             grep -Fx 'CONFIG_ESPTOOLPY_FLASHMODE_QIO=y' sdkconfig;
             grep -Fx 'CONFIG_ESPTOOLPY_FLASHFREQ_80M=y' sdkconfig
@@ -179,10 +207,33 @@ jobs:
             hiphi_frame_merged.bin
           retention-days: 30
 
+  build-ble-off:
+    name: build-ble-off
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Build ESP32-S3 capability-disabled fixture
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.5
+          target: esp32s3
+          path: tests/fixtures/rk_ble_hid_off
+          command: >-
+            set -e;
+            idf.py build;
+            ! grep -Fx 'CONFIG_RK_BLE_HID_HOST=y' sdkconfig;
+            ! grep -Fx 'CONFIG_BT_ENABLED=y' sdkconfig;
+            grep -F 'rk_ble_hid_host_stub.c.obj' build/compile_commands.json;
+            ! grep -F '/rk_ble_hid_host.c.obj' build/compile_commands.json;
+            ! grep -E 'nimble_hidh.c.obj|esp_hidh.c.obj' build/compile_commands.json
+
   release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: [test-shared, build-idf, build-frame]
+    needs: [test-shared, build-idf, build-frame, build-ble-off]
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - uses: actions/checkout@v6

@@ -5,6 +5,7 @@ set(SRC_FILES
     "eink_ui.c"
     "eink_font.c"
     "controller_presentation_frame.c"
+    "ble_hid_host_frame.c"
     "platform_display_frame.c"
     "platform_input_frame.c"
     "platform_http_frame.c"
@@ -15,9 +16,9 @@ set(SRC_FILES
     "captive_portal.c"
     "dns_server.c"
     "pmic_axp2101.c"
-    "ble_remote.c"
     "../../common/app_main.c"
     "../../common/bridge_client.c"
+    "../../common/controller_ble_input.c"
     "../../common/controller_input.c"
     "../../common/wifi_manager.c"
     "../../common/platform/platform_log.c"
@@ -49,6 +50,7 @@ idf_component_register(
         json
         bt
         esp_hid
+        rk_ble_hid_host
 )
 
 set_property(TARGET ${COMPONENT_LIB} PROPERTY C_STANDARD 11)

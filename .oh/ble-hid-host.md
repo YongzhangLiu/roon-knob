@@ -199,7 +199,10 @@ is still required before claiming repeated runtime toggling works.
 ## Build profile
 
 - Add the shared component to both ESP-IDF projects.
-- Gate it with a dedicated S3 HID-host capability symbol.
+- Host-capable targets depend on `rk_ble_hid_host`; targets that exclude BLE
+  depend on the API-compatible `rk_ble_hid_host_stub` component instead.
+- Keep the dedicated S3 HID-host Kconfig symbol as a stack/configuration
+  assertion for host-capable artifacts.
 - Use NimBLE, not the dormant Bluedroid HID-device profile.
 - Require `BT_ENABLED`, `BT_NIMBLE_ENABLED`, `BT_NIMBLE_NVS_PERSIST`,
   `BT_NIMBLE_SM_SC`, and `BT_NIMBLE_HID_SERVICE`.
@@ -231,8 +234,9 @@ These are reviewable commits in one stacked PR for #191. Do not merge it before
 
 ### Automated
 
-- Pure tests cover report parsing, unknown/release reports, state transitions,
-  stale generations, and device-local storage normalization.
+- Pure tests cover report parsing, unknown/release reports, failed-open pointer
+  rejection, teardown readiness, stale scan generations, and target-local
+  enabled defaults; the disabled profile tests every public stub operation.
 - Exact ESP-IDF 5.5.5 PERF builds pass for Frame and host-capable,
   default-disabled Dial.
 - A separate BLE-off compile gate passes without the NimBLE/HID-host stack.

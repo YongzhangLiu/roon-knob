@@ -1,5 +1,6 @@
 #include "app.h"
 #include "battery.h"
+#include "ble_hid_host_dial.h"
 #include "config_server.h"
 #include "display_sleep.h"
 #include "font_manager.h"
@@ -38,6 +39,8 @@ static volatile bool s_ota_check_pending = false;
 static volatile bool s_config_server_start_pending = false;
 static volatile bool s_config_server_stop_pending = false;
 static volatile bool s_mdns_init_pending = false;
+static volatile bool s_ble_init_pending = false;
+static bool s_ble_initialized = false;
 
 // WiFi retry message alternation
 static esp_timer_handle_t s_wifi_msg_timer = NULL;
@@ -108,6 +111,7 @@ void rk_net_evt_cb(rk_net_evt_t evt, const char *ip_opt) {
         s_mdns_init_pending = true;  // mDNS needs network up first
         s_ota_check_pending = true;
         s_config_server_start_pending = true;
+        s_ble_init_pending = true;
         break;
 
     // All failure events alternate between error reason and retry count
@@ -243,6 +247,13 @@ static void ui_loop_task(void *arg) {
             s_ota_check_pending = false;
             ESP_LOGI(TAG, "Checking for firmware updates...");
             ota_check_for_update(false);  // Auto-check: skip for dev versions
+        }
+        if (s_ble_init_pending) {
+            s_ble_init_pending = false;
+            if (!s_ble_initialized) {
+                ESP_LOGI(TAG, "Initializing BLE media-remote host...");
+                s_ble_initialized = ble_hid_host_dial_start();
+            }
         }
         if (s_config_server_start_pending) {
             s_config_server_start_pending = false;

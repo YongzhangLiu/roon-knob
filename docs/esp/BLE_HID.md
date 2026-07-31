@@ -1,244 +1,122 @@
-# BLE HID (Bluetooth Media Control)
+# BLE HID Remote Host
 
-> **Note**: Bluetooth mode was removed from this project. This documentation is kept as reference for other ESP32 projects.
+HiPhi controllers can pair with a separate Bluetooth Low Energy media remote.
+The firmware acts as the BLE HID **host**: it scans for a remote that exposes
+the HID over GATT Profile (HOGP), receives Consumer Control reports, and maps
+supported keys into the shared playback controller.
 
----
+This is not the older, unimplemented mode where Roon Knob advertised itself as
+a BLE keyboard/media controller. The two roles are opposites:
 
-The Roon Knob can operate as a Bluetooth HID (Human Interface Device) media controller, allowing it to control any Bluetooth-enabled device without requiring WiFi or the Roon ecosystem.
+| Role | This firmware | Peer |
+| --- | --- | --- |
+| BLE HID host | HiPhi Frame or HiPhi Dial | Physical media remote |
+| BLE HID device | Not implemented | Phone, computer, or TV |
 
-## Overview
+ESP32-S3 supports Bluetooth LE but not Classic Bluetooth. This feature neither
+uses nor claims Classic Bluetooth, A2DP, or AVRCP support.
 
-When Bluetooth mode is selected from the zone picker, the knob:
-1. Stops WiFi completely (BLE and WiFi share the radio)
-2. Starts advertising as "Roon Knob"
-3. Accepts pairing from any Bluetooth device
-4. Sends HID Consumer Control commands for media control
+## Supported input
 
-## Supported Controls
+The shared host maps these Consumer Control usages:
 
-| Input | HID Command | Function |
-|-------|-------------|----------|
-| Rotate clockwise | Volume Up | Increase volume |
-| Rotate counter-clockwise | Volume Down | Decrease volume |
-| Tap center | Play + Pause | Toggle playback |
-| Tap left | Scan Previous Track | Previous track |
-| Tap right | Scan Next Track | Next track |
+| Remote key | Controller action |
+| --- | --- |
+| Play/Pause | Toggle playback |
+| Next Track | Next track |
+| Previous Track | Previous track |
+| Volume Up | Increase the selected zone's volume |
+| Volume Down | Decrease the selected zone's volume |
+
+Mute is ignored because the shared controller does not currently expose an
+explicit mute command. Unknown report formats and usages are ignored safely.
+HOGP remotes are not perfectly uniform, so support must be verified with the
+specific remote.
+
+## Target behavior
+
+- **HiPhi Frame:** enabled by default to preserve its established behavior.
+- **HiPhi Dial:** compiled into the normal ESP32-S3 firmware but disabled by
+  default. Enable it from the connected device's settings page.
+- Pairing, enablement, and the remembered remote are stored only in that
+  device's local NVS. Nothing is copied or synchronized between Frame and
+  Dial.
+
+Both targets expose scan, pair, connection status, disable, and forget
+operations through target-owned settings. Display code remains target-specific;
+the shared Bluetooth component never calls e-ink or LVGL APIs.
+
+## Lifecycle
+
+The shared `rk_ble_hid_host` component owns NimBLE and `esp_hid` behind one
+serialized command queue. Its public lifecycle is:
+
+```
+UNAVAILABLE -> DISABLED -> STARTING -> READY
+                                      |-> SCANNING
+                                      |-> CONNECTING -> CONNECTED
+active state -> STOPPING -> DISABLED
+```
+
+Disable cancels outstanding work, closes and frees HID devices, deinitializes
+the HID host, stops the NimBLE host task, waits for its exit acknowledgement,
+and then deinitializes the NimBLE port. If bounded teardown cannot complete,
+the service reports an error that requires reboot instead of pretending it is
+safe to re-enable.
+
+Startup NVS, NimBLE, HID, and host-sync failures are reported by name and retried
+up to five times with bounded backoff. A successful sync clears the retry
+budget. Exhausted startup retries remain in `ERROR`; teardown failures remain
+reboot-required.
+
+Forget is stronger than disconnect: it invalidates reconnect work, clears the
+local remembered-device metadata, and deletes the NimBLE peer security record.
 
 ## Pairing
 
-1. Select "Bluetooth" from the zone picker (long-press zone name)
-2. On your phone/computer, go to Bluetooth settings
-3. Find "Roon Knob" and tap to pair
-4. Uses "Just Works" pairing - no PIN required
-5. Bond is saved - device will auto-reconnect after reboot
+1. Connect the controller to Wi-Fi.
+2. Open its settings page in a browser.
+3. On Dial, enable **BLE Media Remote** if it is disabled.
+4. Put the physical remote into pairing mode.
+5. Start a scan and select the remote.
+6. Confirm transport and volume keys operate the selected playback zone.
 
-## Technical Implementation
+Pairing uses the BLE “Just Works” security model because these controllers and
+typical media remotes have no shared display/PIN-entry path. The bond is kept
+in NVS so the host can reconnect after restart.
 
-### BLE Stack
+## Build configuration
 
-Uses a custom BLE HID profile based on [BlueKnob](https://github.com/peterramsing/BlueKnob)'s proven implementation:
+The shipping Frame and Dial ESP32-S3 artifacts enable the shared host
+capability:
 
-- `idf_app/components/ble_hid/` - HID device profile (GATT services)
-- `idf_app/main/ble_hid_client.c` - High-level API and state management
-
-### HID Report Descriptor
-
-The HID profile advertises as a Consumer Control device with the following capabilities:
-- Volume Up/Down (Usage Page 0x0C, Usage 0xE9/0xEA)
-- Play/Pause (Usage 0xCD)
-- Scan Next/Previous Track (Usage 0xB5/0xB6)
-
-### Memory Configuration
-
-BLE and WiFi both require significant RAM. The following optimizations are applied in `sdkconfig.defaults`:
-
-```
-# WiFi buffer reduction
-CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
-CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16
-
-# BT memory settings
-CONFIG_BT_BTC_TASK_STACK_SIZE=3072
-CONFIG_BT_BTU_TASK_STACK_SIZE=4096
-CONFIG_BT_GATT_MAX_SR_PROFILES=4
-CONFIG_BT_GATT_MAX_SR_ATTRIBUTES=50
+```text
+CONFIG_RK_BLE_HID_HOST=y
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_NIMBLE_NVS_PERSIST=y
+CONFIG_BT_NIMBLE_SM_SC=y
+CONFIG_BT_NIMBLE_HID_SERVICE=y
 ```
 
-### Radio Coexistence
+Targets that intentionally exclude Bluetooth depend on the
+`rk_ble_hid_host_stub` component instead of `rk_ble_hid_host`. The stub exposes
+the same stable API and reports `UNAVAILABLE`; because the real component is not
+in that target's dependency graph, NimBLE and `esp_hid` are not compiled. CI
+builds an ESP32-S3 fixture for this profile.
 
-ESP32-S3 has a single radio shared between WiFi and BLE. While they can technically coexist, initialization conflicts can cause crashes. Our approach:
+## Coexistence verification
 
-1. **WiFi mode (default)**: WiFi runs, BLE disabled
-2. **Switching to BLE**: `wifi_mgr_stop()` fully deinitializes WiFi before starting BLE
-3. **Switching to WiFi**: `ble_hid_client_stop()` deinitializes BLE before starting WiFi
+ESP32-S3 shares its 2.4 GHz radio between Wi-Fi and BLE. A successful compile
+does not prove coexistence. Before a firmware is released, the exact artifact
+must be exercised on its target hardware for:
 
-### State Management
+- cold boot and Wi-Fi provisioning;
+- scan, pair, reconnect, disable/re-enable, and forget/reboot;
+- playback-state and artwork traffic while remote keys are active;
+- Wi-Fi loss and recovery during BLE activity;
+- heap and task-stack headroom;
+- absence of reset loops or off-task display access.
 
-```c
-typedef enum {
-    BLE_HID_STATE_DISABLED,    // BLE not started
-    BLE_HID_STATE_ADVERTISING, // Waiting for connection
-    BLE_HID_STATE_CONNECTED    // Device connected, can send commands
-} ble_hid_state_t;
-```
-
-The UI shows different status for each state:
-- Disabled: Shows WiFi/Roon status
-- Advertising: Shows "BLE: Advertising..."
-- Connected: Shows "BLE: Connected"
-
-### Controller Mode Persistence
-
-The selected mode (Roon zones or Bluetooth) is saved to NVS:
-
-```c
-// common/controller_mode.c
-void controller_mode_set(controller_mode_t mode);  // Saves to NVS
-controller_mode_t controller_mode_get(void);       // Loads from NVS
-```
-
-On boot, the saved mode is restored. If Bluetooth was selected, WiFi initialization is skipped entirely.
-
-## Kconfig Options
-
-In `idf_app/main/Kconfig.projbuild`:
-
-```
-CONFIG_ROON_KNOB_BLE_HID_ENABLED=y   # Enable BLE HID support
-CONFIG_ROON_KNOB_BLE_DEVICE_NAME     # Advertised device name (default: "Roon Knob")
-```
-
-To disable BLE support entirely (saves ~100KB flash):
-```
-CONFIG_ROON_KNOB_BLE_HID_ENABLED=n
-```
-
-## Debugging
-
-Enable verbose BLE logging:
-```
-CONFIG_BT_LOG_HCI_TRACE_LEVEL_VERBOSE=y
-CONFIG_BT_LOG_BTM_TRACE_LEVEL_VERBOSE=y
-```
-
-Key log tags:
-- `ble_hid` - High-level state changes and commands
-- `HID_LE_PRF` - GATT profile events
-- `BLE_INIT` - Controller initialization
-
-## Limitations
-
-1. **No simultaneous WiFi+BLE**: Only one can be active at a time
-2. **Single connection**: Only one device can connect at a time
-3. **No media info**: BLE HID is output-only; can't receive track info from the connected device
-4. **iOS quirks**: Some iOS versions require unpairing/repairing after firmware updates
-
----
-
-## Porting Guide
-
-### Using BLE HID in Your Own ESP32 Project
-
-The `ble_hid` component is self-contained and can be copied to other ESP-IDF projects:
-
-1. **Copy the component**: `idf_app/components/ble_hid/` → your project's `components/`
-
-2. **Add to CMakeLists.txt**:
-   ```cmake
-   PRIV_REQUIRES bt ble_hid
-   ```
-
-3. **Add sdkconfig.defaults**:
-   ```
-   CONFIG_BT_ENABLED=y
-   CONFIG_BT_BLE_ENABLED=y
-   CONFIG_BT_BLUEDROID_ENABLED=y
-   CONFIG_BT_CLASSIC_ENABLED=n
-   CONFIG_BT_GATTS_ENABLE=y
-   CONFIG_BT_BLE_SMP_ENABLE=y
-   ```
-
-4. **Initialize and use**:
-   ```c
-   #include "esp_hidd_prf_api.h"
-   #include "hid_dev.h"
-
-   // Initialize BLE stack (see ble_hid_client_start() for full sequence)
-   esp_bt_controller_init(&bt_cfg);
-   esp_bt_controller_enable(ESP_BT_MODE_BLE);
-   esp_bluedroid_init();
-   esp_bluedroid_enable();
-   esp_hidd_profile_init();
-
-   // Register callbacks
-   esp_ble_gap_register_callback(gap_event_handler);
-   esp_hidd_register_callbacks(hidd_event_callback);
-
-   // Send HID commands (after connection established)
-   esp_hidd_send_consumer_value(conn_id, HID_CONSUMER_VOLUME_UP, true);
-   esp_hidd_send_consumer_value(conn_id, HID_CONSUMER_VOLUME_UP, false);
-   ```
-
-### Available HID Consumer Commands
-
-From `hid_dev.h`:
-
-| Constant | Value | Function |
-|----------|-------|----------|
-| `HID_CONSUMER_POWER` | 48 | Power |
-| `HID_CONSUMER_PLAY` | 176 | Play |
-| `HID_CONSUMER_PAUSE` | 177 | Pause |
-| `HID_CONSUMER_RECORD` | 178 | Record |
-| `HID_CONSUMER_FAST_FORWARD` | 179 | Fast Forward |
-| `HID_CONSUMER_REWIND` | 180 | Rewind |
-| `HID_CONSUMER_SCAN_NEXT_TRK` | 181 | Next Track |
-| `HID_CONSUMER_SCAN_PREV_TRK` | 182 | Previous Track |
-| `HID_CONSUMER_STOP` | 183 | Stop |
-| `HID_CONSUMER_PLAY_PAUSE` | 205 | Play/Pause Toggle |
-| `HID_CONSUMER_MUTE` | 226 | Mute |
-| `HID_CONSUMER_VOLUME_UP` | 233 | Volume Up |
-| `HID_CONSUMER_VOLUME_DOWN` | 234 | Volume Down |
-
-### Building a Different App on This Hardware
-
-To create a BLE-only app for the Waveshare ESP32-S3 Knob:
-
-1. **Start from `ble_hid_client.c`** as your main control logic
-2. **Remove Roon/WiFi code** - delete `bridge_client.c`, `wifi_manager.c`, etc.
-3. **Simplify `main_idf.c`** - just init display, input, and BLE
-4. **Modify the UI** - `ui.c` can be simplified to just show BLE status
-
-Example minimal main:
-```c
-void app_main(void) {
-    nvs_flash_init();
-    platform_display_init();
-    lv_init();
-    platform_display_register_lvgl_driver();
-    platform_input_init();
-
-    // Your UI init
-    ui_init_ble_only();
-
-    // Start BLE immediately
-    ble_hid_client_start();
-    ble_hid_client_set_state_callback(my_state_callback);
-
-    // Main loop
-    while (1) {
-        platform_input_process_events();
-        lv_task_handler();
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-}
-```
-
-### Porting to Different ESP32 Hardware
-
-The BLE HID component has no hardware dependencies - it works on any ESP32 variant with BLE support:
-- ESP32 (original)
-- ESP32-S3 (this project)
-- ESP32-C3
-- ESP32-C6
-
-Just ensure your `sdkconfig` matches the chip's BLE capabilities.
+Frame and Dial require separate hardware evidence even though they share the
+same BLE service.
