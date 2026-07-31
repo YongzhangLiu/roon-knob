@@ -137,7 +137,7 @@ and NimBLE. The shipping profile is intentionally narrow:
 | Preferred ATT MTU | 128 bytes | Consumer-control reports do not need the former 256-byte default. |
 | NimBLE mbuf/ACL/event pools | Reduced to the single-remote budget | Avoid reserving internal heap for unused throughput and links. |
 | NimBLE dynamic allocations | PSRAM (`MEM_ALLOC_MODE_EXTERNAL`) | Protects internal/DMA heap needed by LVGL and display DMA. |
-| UI task | Core 1, 32 KiB internal stack | Keeps rendering and its stack away from radio work. |
+| UI task | Core 1, 16 KiB internal stack | Keeps rendering and its stack away from radio work. |
 | NimBLE host/service tasks | Core 0, internal stacks | Co-locates BLE with the Wi-Fi task while retaining cache-safe stacks. |
 | Wi-Fi task | Core 0 | Explicit ESP-IDF configuration. |
 

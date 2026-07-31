@@ -47,7 +47,7 @@ The SH8601 is an LCD driver IC that accepts pixel data over Quad SPI, allowing f
 ### UI task ownership and diagnostics
 
 All LVGL work runs from the dedicated `ui_loop` task, pinned to core 1 with a
-32 KiB internal-RAM stack. Wi-Fi and NimBLE execute on core 0. This division is
+16 KiB internal-RAM stack. Wi-Fi and NimBLE execute on core 0. This division is
 intentional: the display needs DMA-capable internal RAM and predictable UI
 scheduling, while the radio stacks contend for the other core.
 

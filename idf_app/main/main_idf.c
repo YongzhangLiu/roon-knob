@@ -30,8 +30,9 @@
 
 static const char *TAG = "main";
 
-// UI task stack size (needs headroom for LVGL rendering + gzip decompression)
-#define UI_LOOP_STACK_SIZE 32768
+// Historical high-water telemetry during gzip artwork decode was ~5.3 KiB.
+// 16 KiB leaves ample headroom while fitting after the Dial's LVGL DMA buffers.
+#define UI_LOOP_STACK_SIZE (16 * 1024)
 #define UI_LOOP_CORE 1
 
 // UI task handle for display sleep management
