@@ -102,6 +102,29 @@ wrapper. A separate GAP listener observes encryption completion and handles
 repeat pairing by deleting a stale peer bond; it must not start a competing
 security procedure.
 
+### ESP-IDF HID interoperability override
+
+ESP-IDF 5.5.5's NimBLE HID wrapper subscribes to an optional Battery Service
+before it subscribes to the HID input reports. Some media remotes complete
+service discovery and encryption but never answer that battery CCCD write. In
+that state `esp_hidh_dev_open()` remains blocked, the public state correctly
+stays `CONNECTING`, and no media-key report can reach the application.
+
+The repository therefore overrides only the pinned `nimble_hidh.c` translation
+unit. It retains the one-shot battery-level read, skips battery notifications,
+and continues with every HID report subscription. The override also clears the
+wrapper's successful-read scratch pointer when ownership moves to its caller;
+otherwise disabling BLE after a read can free the same buffer again during HID
+deinitialization. The patch fails at CMake configuration if the expected
+ESP-IDF 5.5.5 source blocks change, and CI verifies that both production targets
+compile the generated translation unit.
+
+On hardware, a successful open should proceed from
+`Skipping optional Battery Service notification subscription` through the HID
+CCCD writes to `CONNECTED`. A button press must then produce a raw HID input
+log and a mapped Consumer Control action. Discovery and encryption alone are
+not sufficient evidence that the remote is usable.
+
 ## Build configuration
 
 The shipping Frame and Dial ESP32-S3 artifacts enable the shared host
