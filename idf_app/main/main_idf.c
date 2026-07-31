@@ -19,6 +19,7 @@
 #include "lvgl.h"
 
 #include <esp_err.h>
+#include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <esp_timer.h>
 #include <stdio.h>
@@ -349,7 +350,17 @@ void app_main(void) {
 
     // Create UI loop task BEFORE starting WiFi (WiFi events need LVGL task running)
     ESP_LOGI(TAG, "Creating UI loop task");
-    xTaskCreate(ui_loop_task, "ui_loop", UI_LOOP_STACK_SIZE, NULL, 2, &g_ui_task_handle);  // 32KB stack (LVGL + gzip decompression)
+    if (xTaskCreate(ui_loop_task, "ui_loop", UI_LOOP_STACK_SIZE, NULL, 2,
+                    &g_ui_task_handle) != pdPASS) {
+        ESP_LOGE(TAG,
+                 "UI loop task creation failed: internal heap free=%u largest=%u",
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+        return;
+    }
+    ESP_LOGI(TAG, "UI loop task created: internal heap free=%u largest=%u",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
 
     // Initialize display sleep management now that UI task is created
     ESP_LOGI(TAG, "Initializing display sleep management");
