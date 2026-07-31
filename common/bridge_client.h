@@ -1,12 +1,12 @@
 #pragma once
 
 #include "rk_cfg.h"
-#include "ui.h"
+#include "controller_input.h"
 #include <stdbool.h>
 #include <stddef.h>
 
 void bridge_client_start(const rk_cfg_t *cfg);
-void bridge_client_handle_input(ui_input_event_t event);
+void bridge_client_handle_input(controller_input_action_t event);
 void bridge_client_handle_volume_rotation(int ticks);  // Velocity-sensitive volume control
 void bridge_client_set_network_ready(bool ready);
 const char* bridge_client_get_artwork_url(char *url_buf, size_t buf_len, int width, int height);

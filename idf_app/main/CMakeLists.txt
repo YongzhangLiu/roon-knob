@@ -14,6 +14,7 @@ set(SRC_FILES
     "platform_input_idf.c"
     "battery.c"
     "ota_update.c"
+    "controller_presentation_dial.c"
     "font_manager.c"
     # Generated bitmap fonts (run scripts/generate_fonts.sh to regenerate)
     # Typography: Lato for metadata, Noto Sans for content (matches Roon's design)
@@ -26,6 +27,7 @@ set(SRC_FILES
     "fonts/lucide_battery_22.c"
     "../../common/app_main.c"
     "../../common/bridge_client.c"
+    "../../common/controller_input.c"
     "../../common/ui.c"
     "../../common/ui_jpeg.c"
     "../../common/platform/platform_log.c"
@@ -71,4 +73,3 @@ set_property(TARGET ${COMPONENT_LIB} PROPERTY C_STANDARD 11)
 target_compile_definitions(${COMPONENT_LIB} PRIVATE TARGET_PC=0)
 # TODO(#183): Remove after ESP-IDF 6.0 migration (Picolibc has proper strlcpy)
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-error=stringop-truncation)
-

@@ -1,5 +1,5 @@
 #include "platform/platform_input.h"
-#include "ui.h"
+#include "controller_input.h"
 #include "display_sleep.h"
 
 #include "driver/gpio.h"
@@ -216,8 +216,8 @@ void platform_input_process_events(void) {
             return;
         }
 
-        // Dispatch single volume rotation with coalesced tick count
-        ui_handle_volume_rotation(total_ticks);
+        // Dispatch single normalized rotation event with coalesced tick count
+        controller_input_dispatch_rotation(total_ticks);
     }
 }
 

@@ -5,7 +5,8 @@
 #include "platform/platform_storage.h"
 #include "rk_cfg.h"
 #include "bridge_client.h"
-#include "ui.h"
+#include "controller_input.h"
+#include "controller_presentation.h"
 
 #include <stdbool.h>
 
@@ -19,7 +20,8 @@ void app_entry(void) {
     }
 
     // Note: mDNS init moved to after WiFi connects (in main_idf.c)
-    ui_set_input_handler(bridge_client_handle_input);
-    ui_set_zone_name(cfg.zone_id[0] ? cfg.zone_id : "Tap here to select zone");
+    controller_input_set_action_handler(bridge_client_handle_input);
+    controller_input_set_rotation_handler(bridge_client_handle_volume_rotation);
+    controller_presentation_set_zone_name(cfg.zone_id[0] ? cfg.zone_id : "Tap here to select zone");
     bridge_client_start(&cfg);
 }
