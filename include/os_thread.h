@@ -6,6 +6,7 @@
 #ifdef ESP_PLATFORM
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/idf_additions.h"
 #include "freertos/task.h"
 
 typedef TaskHandle_t os_thread_t;
@@ -23,6 +24,23 @@ static inline int os_thread_create_configured(os_thread_t *thread,
         arg,
         5,
         thread
+    );
+    return ret == pdPASS ? 0 : -1;
+}
+
+static inline int os_thread_create_external_stack(os_thread_t *thread,
+                                                   os_thread_func_t func,
+                                                   void *arg,
+                                                   const char *name,
+                                                   uint32_t stack_size) {
+    BaseType_t ret = xTaskCreateWithCaps(
+        (TaskFunction_t)func,
+        name,
+        stack_size,
+        arg,
+        5,
+        thread,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
     );
     return ret == pdPASS ? 0 : -1;
 }
@@ -93,6 +111,15 @@ static inline int os_thread_create_configured(os_thread_t *thread,
     (void)name;
     (void)stack_size;
     return os_thread_create(thread, func, arg);
+}
+
+
+static inline int os_thread_create_external_stack(os_thread_t *thread,
+                                                   os_thread_func_t func,
+                                                   void *arg,
+                                                   const char *name,
+                                                   uint32_t stack_size) {
+    return os_thread_create_configured(thread, func, arg, name, stack_size);
 }
 
 static inline size_t os_thread_current_stack_free_bytes(void) {

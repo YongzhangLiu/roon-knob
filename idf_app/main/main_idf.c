@@ -30,8 +30,8 @@
 
 static const char *TAG = "main";
 
-// Historical high-water telemetry during gzip artwork decode was ~5.3 KiB.
-// 16 KiB leaves ample headroom while fitting after the Dial's LVGL DMA buffers.
+// Hardware telemetry with the full network/configuration path reached 13.1 KiB.
+// 16 KiB fits after the Dial's LVGL DMA buffers while retaining measured margin.
 #define UI_LOOP_STACK_SIZE (16 * 1024)
 #define UI_LOOP_CORE 1
 

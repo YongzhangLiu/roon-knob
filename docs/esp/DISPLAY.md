@@ -68,8 +68,9 @@ total but only a 31,744-byte largest block. The former 32 KiB UI-stack request
 therefore failed, `app_main()` returned, and the initialized panel stayed
 static because no `ui_loop` existed.
 
-The shipping 16 KiB UI stack fits this post-LVGL allocation state and retains
-headroom over the historical ~5.3 KiB gzip-artwork high-water mark. Any change
+The shipping 16 KiB UI stack fits this post-LVGL allocation state. Hardware
+telemetry with Wi-Fi, the configuration server, and BLE controls active reached
+13,052 bytes used, leaving 3,332 bytes. Any change
 to LVGL buffers, image decoding, or task stack size must verify both:
 
 1. `largest internal block >= requested task stack` at the creation point; and
@@ -79,6 +80,21 @@ to LVGL buffers, image decoding, or task stack size must verify both:
 Treat the absence of `UI loop task started on core 1` as a boot failure. It is
 not a condition that Wi-Fi provisioning, browser erase, or BLE pairing can
 repair.
+
+#### Adaptive UI payloads
+
+Downloaded screen descriptions, parsed component models, inactive-screen
+caches, and image decode buffers belong in PSRAM. The HTTP platform API allocates
+JSON response bodies explicitly in PSRAM and applies a 256 KiB default ceiling;
+adaptive-screen callers can request a smaller schema-specific ceiling with
+`platform_http_get_bounded()`. This prevents an oversized or chunked response
+from consuming unbounded memory.
+
+Only the active screen should be materialized as LVGL objects. Fetch, parse,
+materialize, then release or evict inactive payloads rather than retaining an
+HTTP body, parser tree, decoded assets, and multiple LVGL trees simultaneously.
+Display DMA buffers, the LVGL task stack, and latency-sensitive control state
+remain in internal RAM.
 
 ### How LVGL Works
 

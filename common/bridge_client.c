@@ -117,10 +117,20 @@ static char s_last_zones_sha[9] = {0};     // Track zones SHA for zone list chan
 #define BRIDGE_POLL_TASK_STACK_SIZE 16384
 #define BRIDGE_POLL_TASK_START_ATTEMPTS 2
 _Static_assert(BRIDGE_POLL_TASK_STACK_SIZE >= 16384,
-               "bridge worker stack budget must cover endpoint persistence");
+               "bridge worker stack budget must cover response parsing");
 static int s_bridge_fail_count = 0;
 static int s_mdns_fail_count = 0;
 static char s_device_ip[16] = {0};  // Device IP for recovery messages
+
+/* The network worker has a PSRAM stack, so it must never enter NVS/flash
+ * persistence. A single static mailbox moves discovered-endpoint commits onto
+ * the internal UI stack without creating another heap allocation. */
+typedef struct {
+    controller_config_endpoint_token_t token;
+    char discovered[sizeof(((rk_cfg_t *)0)->bridge_base)];
+} discovered_endpoint_commit_t;
+static discovered_endpoint_commit_t s_discovered_endpoint_commit;
+static atomic_bool s_discovered_endpoint_commit_pending = ATOMIC_VAR_INIT(false);
 
 // Fallback bridge URL when mDNS discovery fails and no bridge is stored.
 #ifndef CONFIG_RK_DEFAULT_BRIDGE_BASE
@@ -155,9 +165,9 @@ static bool start_bridge_poll_task(void) {
         LOGI("Bridge worker internal heap before start: free=%zu largest=%zu",
              heap_before, largest_before);
     }
-    if (platform_task_start_configured("bridge_poll",
-                                       BRIDGE_POLL_TASK_STACK_SIZE,
-                                       bridge_poll_thread, NULL) == 0) {
+    if (platform_task_start_external_stack("bridge_poll",
+                                           BRIDGE_POLL_TASK_STACK_SIZE,
+                                           bridge_poll_thread, NULL) == 0) {
         size_t heap_after = platform_task_internal_heap_free_bytes();
         size_t largest_after =
             platform_task_internal_heap_largest_free_block_bytes();
@@ -236,6 +246,7 @@ static void wait_for_poll_interval(void);
 static void bridge_poll_thread(void *arg);
 static bool host_is_valid(const char *url);
 static void maybe_update_bridge_base(void);
+static void commit_discovered_endpoint_on_ui(void *arg);
 static void post_ui_update(const struct now_playing_state *state);
 static void post_ui_status(bool online);
 static void post_ui_zone_name(const char *name);
@@ -327,6 +338,36 @@ static void post_unverified_config_diagnostic(const char *operation) {
     LOGW("%s committed but could not be verified", operation);
     /* This uses the existing persistent network-status presentation path. */
     post_ui_network_status("Settings saved but could not be verified");
+}
+
+static void commit_discovered_endpoint_on_ui(void *arg) {
+    discovered_endpoint_commit_t *commit = arg;
+    if (!commit) {
+        atomic_store_explicit(&s_discovered_endpoint_commit_pending, false,
+                              memory_order_release);
+        return;
+    }
+
+    controller_config_snapshot_t committed;
+    controller_config_write_result_t result =
+        controller_config_set_endpoint_if_current(
+            &commit->token, commit->discovered, true, true, &committed);
+    atomic_store_explicit(&s_discovered_endpoint_commit_pending, false,
+                          memory_order_release);
+
+    if (result == CONTROLLER_CONFIG_NOT_COMMITTED) {
+        LOGI("Ignoring stale mDNS bridge result");
+        return;
+    }
+    if (result == CONTROLLER_CONFIG_COMMITTED_UNVERIFIED) {
+        post_unverified_config_diagnostic("Discovered bridge endpoint");
+        return;
+    }
+    if (committed.value.bridge_base[0] == '\0') {
+        LOGW("Could not persist discovered bridge");
+        return;
+    }
+    controller_presentation_set_message("Hi-Fi Control: Found");
 }
 
 static void ui_connectivity_update_cb(void *arg) {
@@ -530,6 +571,7 @@ static void maybe_update_bridge_base(void) {
     bool need_discovery = token.bridge_base[0] == '\0';
 
     if (!need_discovery) {
+        s_mdns_fail_count = 0;
         return;  // Bridge URL already configured - don't overwrite with mDNS
     }
 
@@ -541,44 +583,23 @@ static void maybe_update_bridge_base(void) {
         // The endpoint must still be clear when this asynchronous lookup
         // completes. A manual set/clear advances the token and wins.
         LOGI("mDNS discovered bridge: %s", discovered);
-        size_t stack_free_before_commit =
-            platform_task_current_stack_free_bytes();
-        if (stack_free_before_commit != SIZE_MAX) {
-            LOGI("Bridge worker stack high-water free before endpoint commit: %zu bytes",
-                 stack_free_before_commit);
-        }
         strip_trailing_slashes(discovered);
-        controller_config_snapshot_t committed;
-        controller_config_write_result_t result =
-            controller_config_set_endpoint_if_current(
-                &token, discovered, true, true, &committed);
-        size_t stack_free_after_commit =
-            platform_task_current_stack_free_bytes();
-        if (stack_free_after_commit != SIZE_MAX) {
-            LOGI("Bridge worker stack high-water free after endpoint commit: %zu bytes",
-                 stack_free_after_commit);
-        }
-        size_t heap_after_commit = platform_task_internal_heap_free_bytes();
-        size_t largest_after_commit =
-            platform_task_internal_heap_largest_free_block_bytes();
-        if (heap_after_commit != SIZE_MAX && largest_after_commit != SIZE_MAX) {
-            LOGI("Bridge worker internal heap after endpoint commit: free=%zu largest=%zu",
-                 heap_after_commit, largest_after_commit);
-        }
-        if (result == CONTROLLER_CONFIG_NOT_COMMITTED) {
-            LOGI("Ignoring stale mDNS bridge result");
+        bool expected = false;
+        if (!atomic_compare_exchange_strong_explicit(
+                &s_discovered_endpoint_commit_pending, &expected, true,
+                memory_order_acq_rel, memory_order_acquire)) {
+            LOGI("Discovered endpoint commit already pending");
             return;
         }
-        if (result == CONTROLLER_CONFIG_COMMITTED_UNVERIFIED) {
-            post_unverified_config_diagnostic("Discovered bridge endpoint");
-            /* Do not present a discovered endpoint as a verified success. */
-            return;
+        s_discovered_endpoint_commit.token = token;
+        rk_strlcpy(s_discovered_endpoint_commit.discovered, discovered,
+                   sizeof(s_discovered_endpoint_commit.discovered));
+        if (!platform_task_post_to_ui(commit_discovered_endpoint_on_ui,
+                                      &s_discovered_endpoint_commit)) {
+            atomic_store_explicit(&s_discovered_endpoint_commit_pending, false,
+                                  memory_order_release);
+            LOGW("Could not queue discovered endpoint commit");
         }
-        s_mdns_fail_count = 0;
-        if (committed.value.bridge_base[0] == '\0') {
-            LOGW("Could not persist discovered bridge");
-        }
-        post_ui_message("Hi-Fi Control: Found");
         return;
     }
 

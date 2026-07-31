@@ -138,13 +138,17 @@ and NimBLE. The shipping profile is intentionally narrow:
 | NimBLE mbuf/ACL/event pools | Reduced to the single-remote budget | Avoid reserving internal heap for unused throughput and links. |
 | NimBLE dynamic allocations | PSRAM (`MEM_ALLOC_MODE_EXTERNAL`) | Protects internal/DMA heap needed by LVGL and display DMA. |
 | UI task | Core 1, 16 KiB internal stack | Keeps rendering and its stack away from radio work. |
-| NimBLE host/service tasks | Core 0, internal stacks | Co-locates BLE with the Wi-Fi task while retaining cache-safe stacks. |
+| NimBLE host/service tasks | Core 0, internal stacks | Co-locates BLE with Wi-Fi while retaining cache-safe stacks for bonding/NVS paths. |
+| Bridge network worker | 16 KiB PSRAM stack | Reclaims a contiguous internal block after endpoint persistence was moved to the internal UI task. |
+| JSON/adaptive UI payloads | Bounded PSRAM buffers | Keeps transient server payloads out of controller/DMA memory. |
 | Wi-Fi task | Core 0 | Explicit ESP-IDF configuration. |
 
-Task stacks are deliberately **not** moved to PSRAM. ESP-IDF can disable cache
-during flash, NVS, and OTA operations; execution stacks used by those paths
-must remain internal. “Use PSRAM for NimBLE” means NimBLE's dynamic pools, not
-every allocation associated with BLE.
+Task stacks that execute flash, NVS, OTA, display DMA, or radio-controller paths
+are deliberately **not** moved to PSRAM. ESP-IDF can disable the external-memory
+cache during those operations, so those stacks remain internal. The bridge
+worker is the narrow exception: it performs network fetch/parse work only and
+hands its former mDNS endpoint commit to the internal UI task. “Use PSRAM for
+NimBLE” still means NimBLE's dynamic pools, not its task stacks.
 
 ESP-IDF's current `esp_hid` BLE-host wrapper has a non-obvious configuration
 dependency: its symbols are compiled behind `BT_NIMBLE_HID_SERVICE`, which in
@@ -175,6 +179,13 @@ heap, when assessing UI/BLE coexistence. LVGL DMA buffers can fragment the
 internal heap enough to prevent the UI stack from being created even while
 total free memory appears generous; see [Display Subsystem](DISPLAY.md) for
 the concrete Dial failure and acceptance rule.
+
+The corresponding BLE-controller failure was observed with only 4,867 bytes
+of internal heap free and a 1,600-byte largest block immediately before
+`nimble_port_init()`. ESP-IDF then reported `Malloc failed` and
+`esp_bt_controller_init -2`. The bridge worker and transient HTTP/HTML payloads
+must therefore remain PSRAM-backed so the controller can reserve its required
+contiguous internal block.
 
 ## Coexistence verification
 

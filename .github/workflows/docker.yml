@@ -323,6 +323,7 @@ jobs:
             ! grep -Fx "CONFIG_COMPILER_OPTIMIZATION_DEBUG=y" sdkconfig;
             grep -Fx "CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192" sdkconfig;
             grep -Fx "CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096" sdkconfig;
+            grep -Fx "CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM=y" sdkconfig;
             grep -Fx "CONFIG_RK_BLE_HID_HOST=y" sdkconfig;
             grep -Fx "CONFIG_BT_ENABLED=y" sdkconfig;
             grep -Fx "CONFIG_BT_NIMBLE_ENABLED=y" sdkconfig;
@@ -424,6 +425,7 @@ jobs:
             ! grep -Fx "CONFIG_COMPILER_OPTIMIZATION_DEBUG=y" sdkconfig;
             grep -Fx "CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192" sdkconfig;
             grep -Fx "CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096" sdkconfig;
+            grep -Fx "CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM=y" sdkconfig;
             grep -Fx "CONFIG_RK_BLE_HID_HOST=y" sdkconfig;
             grep -Fx "CONFIG_BT_ENABLED=y" sdkconfig;
             grep -Fx "CONFIG_BT_NIMBLE_ENABLED=y" sdkconfig;

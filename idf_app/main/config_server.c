@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <esp_err.h>
+#include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <esp_http_server.h>
 #include <esp_system.h>
@@ -318,7 +319,8 @@ static esp_err_t config_get_handler(httpd_req_t *req) {
     }
 
     // Build HTML with current values, saved networks, and bridge status.
-    char *html = malloc(4096);
+    char *html = heap_caps_malloc(4096,
+                                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!html) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
         return ESP_FAIL;
@@ -390,7 +392,8 @@ static esp_err_t config_post_handler(httpd_req_t *req) {
     }
 
     // Send success response
-    char *html = malloc(1024);
+    char *html = heap_caps_malloc(1024,
+                                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!html) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
         return ESP_FAIL;
@@ -553,7 +556,8 @@ static esp_err_t ble_get_handler(httpd_req_t *req) {
         results, RK_BLE_HID_HOST_MAX_RESULTS, &scan_generation);
 
     const size_t html_size = 12288;
-    char *html = malloc(html_size);
+    char *html = heap_caps_malloc(html_size,
+                                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!html) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
                             "Out of memory");
@@ -568,6 +572,7 @@ static esp_err_t ble_get_handler(httpd_req_t *req) {
     int pos = snprintf(
         html, html_size,
         "<!DOCTYPE html><html><head>"
+        "<meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
         "<title>HiPhi Dial - BLE Media Remote</title>"
         "<style>"
@@ -653,7 +658,7 @@ static esp_err_t ble_get_handler(httpd_req_t *req) {
         pos = (int)html_size - 1;
     }
 
-    httpd_resp_set_type(req, "text/html");
+    httpd_resp_set_type(req, "text/html; charset=utf-8");
     httpd_resp_send(req, html, pos);
     free(html);
     return ESP_OK;
