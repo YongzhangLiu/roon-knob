@@ -207,7 +207,7 @@
     },
     {
       "path": ".github/workflows/docker.yml",
-      "contains": "needs: [test-shared, build-idf, build-frame]"
+      "contains": "needs: [test-shared, build-idf]"
     },
     {
       "path": ".github/workflows/docker.yml",
