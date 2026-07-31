@@ -184,7 +184,10 @@ static void copy_str(char *dst, size_t dst_len, const char *src) {
     if (!src) {
         src = "";
     }
-    size_t in_len = strnlen(src, dst_len - 1);
+    size_t in_len = 0;
+    while (in_len + 1 < dst_len && src[in_len] != '\0') {
+        ++in_len;
+    }
     memcpy(dst, src, in_len);
     dst[in_len] = '\0';
 }
