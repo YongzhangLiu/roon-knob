@@ -268,15 +268,15 @@ jobs:
           command: >-
             set -e;
             idf.py build;
-            grep -Fx 'CONFIG_COMPILER_OPTIMIZATION_PERF=y' sdkconfig;
-            ! grep -Fx 'CONFIG_COMPILER_OPTIMIZATION_DEBUG=y' sdkconfig;
-            grep -Fx 'CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096' sdkconfig;
-            grep -Fx 'CONFIG_RK_BLE_HID_HOST=y' sdkconfig;
-            grep -Fx 'CONFIG_BT_ENABLED=y' sdkconfig;
-            grep -Fx 'CONFIG_BT_NIMBLE_ENABLED=y' sdkconfig;
-            grep -Fx 'CONFIG_BT_NIMBLE_NVS_PERSIST=y' sdkconfig;
-            grep -Fx 'CONFIG_BT_NIMBLE_SM_SC=y' sdkconfig;
-            grep -Fx 'CONFIG_BT_NIMBLE_HID_SERVICE=y' sdkconfig
+            grep -Fx "CONFIG_COMPILER_OPTIMIZATION_PERF=y" sdkconfig;
+            ! grep -Fx "CONFIG_COMPILER_OPTIMIZATION_DEBUG=y" sdkconfig;
+            grep -Fx "CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096" sdkconfig;
+            grep -Fx "CONFIG_RK_BLE_HID_HOST=y" sdkconfig;
+            grep -Fx "CONFIG_BT_ENABLED=y" sdkconfig;
+            grep -Fx "CONFIG_BT_NIMBLE_ENABLED=y" sdkconfig;
+            grep -Fx "CONFIG_BT_NIMBLE_NVS_PERSIST=y" sdkconfig;
+            grep -Fx "CONFIG_BT_NIMBLE_SM_SC=y" sdkconfig;
+            grep -Fx "CONFIG_BT_NIMBLE_HID_SERVICE=y" sdkconfig
 
       - name: Create merged flash image for web flashing
         run: |
@@ -352,17 +352,17 @@ jobs:
           command: >-
             set -e;
             idf.py build;
-            grep -Fx 'CONFIG_COMPILER_OPTIMIZATION_PERF=y' sdkconfig;
-            ! grep -Fx 'CONFIG_COMPILER_OPTIMIZATION_DEBUG=y' sdkconfig;
-            grep -Fx 'CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096' sdkconfig;
-            grep -Fx 'CONFIG_RK_BLE_HID_HOST=y' sdkconfig;
-            grep -Fx 'CONFIG_BT_ENABLED=y' sdkconfig;
-            grep -Fx 'CONFIG_BT_NIMBLE_ENABLED=y' sdkconfig;
-            grep -Fx 'CONFIG_BT_NIMBLE_NVS_PERSIST=y' sdkconfig;
-            grep -Fx 'CONFIG_BT_NIMBLE_SM_SC=y' sdkconfig;
-            grep -Fx 'CONFIG_BT_NIMBLE_HID_SERVICE=y' sdkconfig;
-            grep -Fx 'CONFIG_ESPTOOLPY_FLASHMODE_QIO=y' sdkconfig;
-            grep -Fx 'CONFIG_ESPTOOLPY_FLASHFREQ_80M=y' sdkconfig
+            grep -Fx "CONFIG_COMPILER_OPTIMIZATION_PERF=y" sdkconfig;
+            ! grep -Fx "CONFIG_COMPILER_OPTIMIZATION_DEBUG=y" sdkconfig;
+            grep -Fx "CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096" sdkconfig;
+            grep -Fx "CONFIG_RK_BLE_HID_HOST=y" sdkconfig;
+            grep -Fx "CONFIG_BT_ENABLED=y" sdkconfig;
+            grep -Fx "CONFIG_BT_NIMBLE_ENABLED=y" sdkconfig;
+            grep -Fx "CONFIG_BT_NIMBLE_NVS_PERSIST=y" sdkconfig;
+            grep -Fx "CONFIG_BT_NIMBLE_SM_SC=y" sdkconfig;
+            grep -Fx "CONFIG_BT_NIMBLE_HID_SERVICE=y" sdkconfig;
+            grep -Fx "CONFIG_ESPTOOLPY_FLASHMODE_QIO=y" sdkconfig;
+            grep -Fx "CONFIG_ESPTOOLPY_FLASHFREQ_80M=y" sdkconfig
 
       - name: Create merged HiPhi Frame image
         run: |
@@ -406,11 +406,11 @@ jobs:
           command: >-
             set -e;
             idf.py build;
-            ! grep -Fx 'CONFIG_RK_BLE_HID_HOST=y' sdkconfig;
-            ! grep -Fx 'CONFIG_BT_ENABLED=y' sdkconfig;
-            grep -F 'rk_ble_hid_host_stub.c.obj' build/compile_commands.json;
-            ! grep -F '/rk_ble_hid_host.c.obj' build/compile_commands.json;
-            ! grep -E 'nimble_hidh.c.obj|esp_hidh.c.obj' build/compile_commands.json
+            ! grep -Fx "CONFIG_RK_BLE_HID_HOST=y" sdkconfig;
+            ! grep -Fx "CONFIG_BT_ENABLED=y" sdkconfig;
+            grep -F "rk_ble_hid_host_stub.c.obj" build/compile_commands.json;
+            ! grep -F "/rk_ble_hid_host.c.obj" build/compile_commands.json;
+            ! grep -E "nimble_hidh.c.obj|esp_hidh.c.obj" build/compile_commands.json
 
   release:
     name: Create GitHub Release
