@@ -586,7 +586,9 @@ static int gap_listener_event(struct ble_gap_event *gap_event, void *arg) {
     (void)arg;
     if (gap_event->type == BLE_GAP_EVENT_CONNECT && gap_event->connect.status == 0) {
         const int rc = ble_gap_security_initiate(gap_event->connect.conn_handle);
-        if (rc) ESP_LOGW(TAG, "security initiate failed: %d", rc);
+        if (rc != 0 && rc != BLE_HS_EALREADY) {
+            ESP_LOGW(TAG, "security initiate failed: %d", rc);
+        }
     } else if (gap_event->type == BLE_GAP_EVENT_REPEAT_PAIRING) {
         struct ble_gap_conn_desc description;
         if (ble_gap_conn_find(gap_event->repeat_pairing.conn_handle, &description) == 0) {

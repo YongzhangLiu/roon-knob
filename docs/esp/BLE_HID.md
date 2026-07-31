@@ -97,6 +97,7 @@ CONFIG_BT_NIMBLE_ENABLED=y
 CONFIG_BT_NIMBLE_NVS_PERSIST=y
 CONFIG_BT_NIMBLE_SM_SC=y
 CONFIG_BT_NIMBLE_HID_SERVICE=y
+CONFIG_BT_NIMBLE_GATT_MAX_PROCS=2
 ```
 
 Targets that intentionally exclude Bluetooth depend on a stub component instead
@@ -138,6 +139,7 @@ Architecture](MEMORY.md); this section records the BLE-specific budget.
 | --- | --- | --- |
 | Active connections | 1 | One paired media remote is the product requirement. |
 | Preferred ATT MTU | 128 bytes | Consumer-control reports do not need the former 256-byte default. |
+| Concurrent GATT procedures | 2 | ESP-IDF's HID client can begin service discovery while MTU exchange is still active; one slot makes discovery fail immediately. |
 | NimBLE mbuf/ACL/event pools | Reduced to the single-remote budget | Avoid reserving internal heap for unused throughput and links. |
 | NimBLE dynamic allocations | PSRAM (`MEM_ALLOC_MODE_EXTERNAL`) | Protects internal/DMA heap needed by LVGL and display DMA. |
 | UI task | Core 1, 16 KiB internal stack | Keeps rendering and its stack away from radio work. |

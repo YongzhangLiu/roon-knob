@@ -334,6 +334,7 @@ jobs:
             grep -Fx "CONFIG_BT_NIMBLE_NVS_PERSIST=y" sdkconfig;
             grep -Fx "CONFIG_BT_NIMBLE_SM_SC=y" sdkconfig;
             grep -Fx "CONFIG_BT_NIMBLE_HID_SERVICE=y" sdkconfig;
+            grep -Fx "CONFIG_BT_NIMBLE_GATT_MAX_PROCS=2" sdkconfig;
             grep -F "/rk_ble_hid_host.c.obj" build/compile_commands.json;
             ! grep -F "rk_ble_hid_host_stub.c.obj" build/compile_commands.json;
             grep -E "^rk_ble_hid_host_init[[:space:]]+esp-idf/rk_ble_hid_host/librk_ble_hid_host[.]a[(]rk_ble_hid_host[.]c[.]obj[)][[:space:]]*$" build/hiphi_dial.map;
@@ -436,6 +437,7 @@ jobs:
             grep -Fx "CONFIG_BT_NIMBLE_NVS_PERSIST=y" sdkconfig;
             grep -Fx "CONFIG_BT_NIMBLE_SM_SC=y" sdkconfig;
             grep -Fx "CONFIG_BT_NIMBLE_HID_SERVICE=y" sdkconfig;
+            grep -Fx "CONFIG_BT_NIMBLE_GATT_MAX_PROCS=2" sdkconfig;
             grep -F "/rk_ble_hid_host.c.obj" build/compile_commands.json;
             ! grep -F "rk_ble_hid_host_stub.c.obj" build/compile_commands.json;
             grep -E "^rk_ble_hid_host_init[[:space:]]+esp-idf/rk_ble_hid_host/librk_ble_hid_host[.]a[(]rk_ble_hid_host[.]c[.]obj[)][[:space:]]*$" build/hiphi_frame.map;
