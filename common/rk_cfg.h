@@ -2,9 +2,26 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <string.h>
 
-#define RK_CFG_CURRENT_VER 2
+// Safe bounded string copy that avoids GCC -Wstringop-truncation and -Wrestrict
+static inline void rk_strlcpy(char *dst, const char *src, size_t dst_size) {
+    if (!dst_size) return;
+    size_t len = strlen(src);
+    if (len >= dst_size) len = dst_size - 1;
+    memcpy(dst, src, len);
+    dst[len] = '\0';
+}
+
+#define RK_CFG_CURRENT_VER 3
 #define RK_CFG_V1_SIZE 291  // Size of v1 struct for migration
+#define RK_CFG_V2_SIZE 374  // Size of v2 struct for migration
+#define RK_MAX_WIFI 2
+
+typedef struct {
+    char ssid[33];
+    char pass[65];
+} rk_wifi_entry_t;
 
 // Display config defaults (match bridge defaults)
 #define RK_DEFAULT_ROTATION_CHARGING 180
@@ -87,6 +104,10 @@ typedef struct {
 
     // Bridge discovery source (V2 addition)
     uint8_t bridge_from_mdns;            // 1 if bridge was discovered via mDNS, 0 if manually configured
+
+    // === V3 fields (multi-WiFi) ===
+    rk_wifi_entry_t wifi[RK_MAX_WIFI];  // Known WiFi networks (tried in order)
+    uint8_t wifi_count;                  // Number of valid entries in wifi[]
 } rk_cfg_t;
 
 static inline bool rk_cfg_is_valid(const rk_cfg_t *cfg) {
@@ -173,4 +194,148 @@ static inline uint16_t rk_cfg_get_deep_sleep_timeout(const rk_cfg_t *cfg, bool i
     return cfg->deep_sleep_battery_enabled ? cfg->deep_sleep_battery_timeout_sec : 0;
 }
 
-_Static_assert(sizeof(rk_cfg_t) == 374, "rk_cfg_t size changed - update RK_CFG_V1_SIZE if needed");
+// Find a WiFi entry by SSID. Returns index or -1 if not found.
+static inline int rk_cfg_find_wifi(const rk_cfg_t *cfg, const char *ssid) {
+    if (!cfg || !ssid) return -1;
+    for (int i = 0; i < cfg->wifi_count && i < RK_MAX_WIFI; i++) {
+        if (strcmp(cfg->wifi[i].ssid, ssid) == 0) return i;
+    }
+    return -1;
+}
+
+// Add or update a WiFi entry. Returns the entry index, or -1 when full.
+// Replacing a saved network must be an explicit user action.
+static inline int rk_cfg_add_wifi(rk_cfg_t *cfg, const char *ssid, const char *pass) {
+    if (!cfg || !ssid) return -1;
+    int idx = rk_cfg_find_wifi(cfg, ssid);
+    if (idx >= 0) {
+        // Update existing entry
+        if (pass) {
+            rk_strlcpy(cfg->wifi[idx].pass, pass, sizeof(cfg->wifi[idx].pass));
+        }
+        return idx;
+    }
+    // Add new entry
+    if (cfg->wifi_count < RK_MAX_WIFI) {
+        idx = cfg->wifi_count++;
+    } else {
+        return -1;
+    }
+    rk_strlcpy(cfg->wifi[idx].ssid, ssid, sizeof(cfg->wifi[idx].ssid));
+    cfg->wifi[idx].pass[0] = '\0';
+    if (pass) {
+        rk_strlcpy(cfg->wifi[idx].pass, pass, sizeof(cfg->wifi[idx].pass));
+    }
+    return idx;
+}
+
+// Remove a WiFi entry by index, shifting remaining entries down.
+static inline void rk_cfg_remove_wifi(rk_cfg_t *cfg, int idx) {
+    if (!cfg || cfg->wifi_count > RK_MAX_WIFI ||
+        idx < 0 || idx >= cfg->wifi_count || idx >= RK_MAX_WIFI) {
+        return;
+    }
+    for (int i = idx; i < cfg->wifi_count - 1 && i < RK_MAX_WIFI - 1; i++) {
+        cfg->wifi[i] = cfg->wifi[i + 1];
+    }
+    cfg->wifi_count--;
+    memset(&cfg->wifi[cfg->wifi_count], 0, sizeof(rk_wifi_entry_t));
+}
+
+// Keep legacy runtime credentials aligned with the first persisted entry.
+// These fields remain in v3 for compatibility with existing controller code.
+static inline void rk_cfg_sync_primary_wifi(rk_cfg_t *cfg) {
+    if (!cfg) return;
+    if (cfg->wifi_count > 0) {
+        rk_strlcpy(cfg->ssid, cfg->wifi[0].ssid, sizeof(cfg->ssid));
+        rk_strlcpy(cfg->pass, cfg->wifi[0].pass, sizeof(cfg->pass));
+    } else {
+        cfg->ssid[0] = '\0';
+        cfg->pass[0] = '\0';
+    }
+}
+
+// Move an existing entry to the front of the connection order.
+static inline bool rk_cfg_promote_wifi(rk_cfg_t *cfg, int idx) {
+    if (!cfg || cfg->wifi_count > RK_MAX_WIFI ||
+        idx < 0 || idx >= cfg->wifi_count || idx >= RK_MAX_WIFI) {
+        return false;
+    }
+    if (idx > 0) {
+        rk_wifi_entry_t selected = cfg->wifi[idx];
+        for (int i = idx; i > 0; i--) {
+            cfg->wifi[i] = cfg->wifi[i - 1];
+        }
+        cfg->wifi[0] = selected;
+    }
+    rk_cfg_sync_primary_wifi(cfg);
+    return true;
+}
+
+// Merge only this device's local connectivity into a controller-owned config.
+// Bridge, zone, display, and power settings remain untouched.
+static inline bool rk_cfg_copy_local_connectivity(rk_cfg_t *dst,
+                                                  const rk_cfg_t *src) {
+    if (!dst || !src || src->wifi_count > RK_MAX_WIFI) {
+        return false;
+    }
+    memcpy(dst->wifi, src->wifi, sizeof(dst->wifi));
+    dst->wifi_count = src->wifi_count;
+    rk_strlcpy(dst->ssid, src->ssid, sizeof(dst->ssid));
+    rk_strlcpy(dst->pass, src->pass, sizeof(dst->pass));
+    dst->cfg_ver = RK_CFG_CURRENT_VER;
+    return true;
+}
+
+// Repair a same-device v3 blob before any helper trusts its persisted count
+// or strings. Returns true when the caller should persist the repaired blob.
+static inline bool rk_cfg_normalize_wifi(rk_cfg_t *cfg) {
+    if (!cfg) return false;
+    bool changed = false;
+
+    if (cfg->ssid[sizeof(cfg->ssid) - 1] != '\0') changed = true;
+    if (cfg->pass[sizeof(cfg->pass) - 1] != '\0') changed = true;
+    cfg->ssid[sizeof(cfg->ssid) - 1] = '\0';
+    cfg->pass[sizeof(cfg->pass) - 1] = '\0';
+
+    if (cfg->wifi_count > RK_MAX_WIFI) {
+        memset(cfg->wifi, 0, sizeof(cfg->wifi));
+        cfg->wifi_count = 0;
+        if (cfg->ssid[0]) {
+            (void)rk_cfg_add_wifi(cfg, cfg->ssid, cfg->pass);
+        }
+        changed = true;
+    }
+
+    for (int i = 0; i < cfg->wifi_count; i++) {
+        if (cfg->wifi[i].ssid[sizeof(cfg->wifi[i].ssid) - 1] != '\0') {
+            changed = true;
+        }
+        if (cfg->wifi[i].pass[sizeof(cfg->wifi[i].pass) - 1] != '\0') {
+            changed = true;
+        }
+        cfg->wifi[i].ssid[sizeof(cfg->wifi[i].ssid) - 1] = '\0';
+        cfg->wifi[i].pass[sizeof(cfg->wifi[i].pass) - 1] = '\0';
+    }
+
+    for (int i = 0; i < cfg->wifi_count;) {
+        if (cfg->wifi[i].ssid[0] != '\0') {
+            i++;
+            continue;
+        }
+        rk_cfg_remove_wifi(cfg, i);
+        changed = true;
+    }
+
+    char prior_ssid[sizeof(cfg->ssid)];
+    char prior_pass[sizeof(cfg->pass)];
+    rk_strlcpy(prior_ssid, cfg->ssid, sizeof(prior_ssid));
+    rk_strlcpy(prior_pass, cfg->pass, sizeof(prior_pass));
+    rk_cfg_sync_primary_wifi(cfg);
+    if (strcmp(prior_ssid, cfg->ssid) != 0 ||
+        strcmp(prior_pass, cfg->pass) != 0) {
+        changed = true;
+    }
+    return changed;
+}
+_Static_assert(sizeof(rk_cfg_t) == 570, "rk_cfg_t size changed - update migration sizes");

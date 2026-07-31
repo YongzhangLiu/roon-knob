@@ -1,0 +1,12 @@
+{
+  "name": "HiPhi Frame",
+  "version": "latest",
+  "new_install_prompt_erase": true,
+  "builds": [{
+    "chipFamily": "ESP32-S3",
+    "parts": [{
+      "path": "hiphi_frame_merged.bin",
+      "offset": 0
+    }]
+  }]
+}

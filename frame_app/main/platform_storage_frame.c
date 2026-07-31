@@ -1,9 +1,12 @@
+// platform_storage.h implementation for frame_app (diverged from idf_app variant)
+
 #include "platform/platform_storage.h"
+#include "rk_cfg.h"
 
 #include <esp_err.h>
 #include <esp_log.h>
-#include <nvs_flash.h>
 #include <nvs.h>
+#include <nvs_flash.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -14,22 +17,17 @@ static const char *NAMESPACE = "rk_cfg";
 static const char *KEY = "cfg";
 
 static void ensure_version(rk_cfg_t *cfg) {
-    if (!cfg) {
-        return;
-    }
+    if (!cfg) return;
     if (cfg->cfg_ver == 0) {
         cfg->cfg_ver = RK_CFG_CURRENT_VER;
     }
 }
 
-// Strip trailing slashes and whitespace from URL
 static void strip_trailing_slashes(char *url) {
     if (!url) return;
     size_t len = strlen(url);
-    // Strip trailing whitespace and slashes
-    while (len > 0 && (url[len - 1] == '/' || url[len - 1] == ' ' ||
-                       url[len - 1] == '\t' || url[len - 1] == '\n' ||
-                       url[len - 1] == '\r')) {
+    while (len > 0 && (url[len-1] == '/' || url[len-1] == ' ' ||
+                       url[len-1] == '\t' || url[len-1] == '\n' || url[len-1] == '\r')) {
         url[--len] = '\0';
     }
 }
@@ -39,9 +37,7 @@ static esp_err_t open_ns(nvs_handle_t *handle, nvs_open_mode_t mode) {
 }
 
 bool platform_storage_load(rk_cfg_t *out) {
-    if (!out) {
-        return false;
-    }
+    if (!out) return false;
     esp_err_t err;
     nvs_handle_t handle;
     err = open_ns(&handle, NVS_READONLY);
@@ -52,33 +48,23 @@ bool platform_storage_load(rk_cfg_t *out) {
         return false;
     }
 
-    // First, query the actual stored size
     size_t stored_len = 0;
     err = nvs_get_blob(handle, KEY, NULL, &stored_len);
     if (err != ESP_OK) {
         nvs_close(handle);
-        if (err != ESP_ERR_NVS_NOT_FOUND) {
-            ESP_LOGW(TAG, "nvs size query failed: %s", esp_err_to_name(err));
-        }
         memset(out, 0, sizeof(*out));
         return false;
     }
 
-    // Initialize output to zeros first
     memset(out, 0, sizeof(*out));
-
-    // Pass the destination capacity, not the stored blob size. This lets NVS
-    // reject an oversized/corrupt blob without writing beyond rk_cfg_t.
-    size_t read_len = sizeof(*out);
+    size_t read_len = sizeof(*out);  // Buffer capacity, not stored blob size
     err = nvs_get_blob(handle, KEY, out, &read_len);
     nvs_close(handle);
 
     if (err != ESP_OK) {
         if (err == ESP_ERR_NVS_INVALID_LENGTH) {
-            ESP_LOGW(TAG, "Config blob too large (stored=%d, max=%d)",
+            ESP_LOGW(TAG, "Config blob too large for struct (stored=%d, max=%d)",
                      (int)stored_len, (int)sizeof(*out));
-        } else {
-            ESP_LOGW(TAG, "nvs read failed: %s", esp_err_to_name(err));
         }
         memset(out, 0, sizeof(*out));
         return false;
@@ -86,9 +72,9 @@ bool platform_storage_load(rk_cfg_t *out) {
 
     bool needs_persist = false;
 
-    // Handle this device's upgrade from older config versions.
+    // Handle this Frame's local config upgrade.
     if (stored_len == RK_CFG_V1_SIZE && out->cfg_ver == 1) {
-        ESP_LOGI(TAG, "Upgrading this device's config from v1 to v3");
+        ESP_LOGI(TAG, "Upgrading this Frame's config from v1 to v3");
         rk_cfg_set_display_defaults(out);
         if (out->ssid[0]) {
             rk_cfg_add_wifi(out, out->ssid, out->pass);
@@ -96,15 +82,14 @@ bool platform_storage_load(rk_cfg_t *out) {
         out->cfg_ver = RK_CFG_CURRENT_VER;
         needs_persist = true;
     } else if (stored_len == RK_CFG_V2_SIZE && out->cfg_ver == 2) {
-        ESP_LOGI(TAG, "Upgrading this device's config from v2 to v3");
+        ESP_LOGI(TAG, "Upgrading this Frame's config from v2 to v3");
         if (out->ssid[0]) {
             rk_cfg_add_wifi(out, out->ssid, out->pass);
         }
         out->cfg_ver = RK_CFG_CURRENT_VER;
         needs_persist = true;
     } else if (stored_len != sizeof(*out)) {
-        ESP_LOGW(TAG, "Config size mismatch (stored=%d, expected=%d), applying defaults",
-                 (int)stored_len, (int)sizeof(*out));
+        ESP_LOGW(TAG, "Config size mismatch (stored=%d, expected=%d)", (int)stored_len, (int)sizeof(*out));
         memset(out, 0, sizeof(*out));
         rk_cfg_set_display_defaults(out);
         out->cfg_ver = RK_CFG_CURRENT_VER;
@@ -115,31 +100,21 @@ bool platform_storage_load(rk_cfg_t *out) {
     if (rk_cfg_normalize_wifi(out)) {
         needs_persist = true;
     }
-
-    // Normalize bridge_base: strip trailing slashes to prevent //path issues
     strip_trailing_slashes(out->bridge_base);
 
-    // Log all fields for debugging
-    ESP_LOGI(TAG, "Loaded config: ssid='%s' bridge='%s' zone='%s' ver=%d rot=%d/%d",
+    ESP_LOGI(TAG, "Loaded config: ssid='%s' bridge='%s' zone='%s' ver=%d",
              out->ssid[0] ? out->ssid : "(empty)",
              out->bridge_base[0] ? out->bridge_base : "(empty)",
-             out->zone_id[0] ? out->zone_id : "(empty)",
-             out->cfg_ver,
-             out->rotation_charging,
-             out->rotation_not_charging);
-
+             out->zone_id[0] ? out->zone_id : "(empty)", out->cfg_ver);
     if (needs_persist && !platform_storage_save(out)) {
-        ESP_LOGE(TAG, "Could not persist upgraded/repaired config");
+        ESP_LOGE(TAG, "Could not persist upgraded/repaired Frame config");
         return false;
     }
-
     return true;
 }
 
 bool platform_storage_save(const rk_cfg_t *in) {
-    if (!in) {
-        return false;
-    }
+    if (!in) return false;
     rk_cfg_t copy = *in;
     ensure_version(&copy);
     (void)rk_cfg_normalize_wifi(&copy);
@@ -148,8 +123,7 @@ bool platform_storage_save(const rk_cfg_t *in) {
     ESP_LOGI(TAG, "Saving config: ssid='%s' bridge='%s' zone='%s' ver=%d",
              copy.ssid[0] ? copy.ssid : "(empty)",
              copy.bridge_base[0] ? copy.bridge_base : "(empty)",
-             copy.zone_id[0] ? copy.zone_id : "(empty)",
-             copy.cfg_ver);
+             copy.zone_id[0] ? copy.zone_id : "(empty)", copy.cfg_ver);
 
     esp_err_t err;
     nvs_handle_t handle;
@@ -164,15 +138,12 @@ bool platform_storage_save(const rk_cfg_t *in) {
         nvs_close(handle);
         return false;
     }
-    ESP_LOGI(TAG, "nvs_set_blob OK, committing...");
-
     err = nvs_commit(handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "nvs_commit failed: %s", esp_err_to_name(err));
         nvs_close(handle);
         return false;
     }
-    ESP_LOGI(TAG, "nvs_commit OK");
     nvs_close(handle);
 
     // Verify by reading back
@@ -181,34 +152,32 @@ bool platform_storage_save(const rk_cfg_t *in) {
         ESP_LOGE(TAG, "VERIFY FAILED: Could not read back saved config!");
         return false;
     }
-
     if (strcmp(verify.ssid, copy.ssid) != 0) {
-        ESP_LOGE(TAG, "VERIFY FAILED: SSID mismatch! saved='%s' read='%s'",
-                 copy.ssid, verify.ssid);
+        ESP_LOGE(TAG, "VERIFY FAILED: SSID mismatch!");
+        return false;
+    }
+    if (strcmp(verify.bridge_base, copy.bridge_base) != 0) {
+        ESP_LOGE(TAG, "VERIFY FAILED: bridge_base mismatch!");
+        return false;
+    }
+    if (strcmp(verify.zone_id, copy.zone_id) != 0) {
+        ESP_LOGE(TAG, "VERIFY FAILED: zone_id mismatch!");
         return false;
     }
 
-    ESP_LOGI(TAG, "VERIFY OK: Config saved and verified successfully");
     return true;
 }
 
 void platform_storage_defaults(rk_cfg_t *out) {
-    if (!out) {
-        return;
-    }
+    if (!out) return;
     memset(out, 0, sizeof(*out));
     rk_cfg_set_display_defaults(out);
-    // Leave bridge_base empty - mDNS discovery is the primary method
-    // wifi_manager will fill SSID/pass from Kconfig defaults
-    // zone_id is left empty - user will select from available zones
-    ESP_LOGI(TAG, "Applied defaults (bridge will be discovered via mDNS)");
     out->cfg_ver = RK_CFG_CURRENT_VER;
+    ESP_LOGI(TAG, "Applied defaults");
 }
 
 void platform_storage_reset_wifi_only(rk_cfg_t *cfg) {
-    if (!cfg) {
-        return;
-    }
+    if (!cfg) return;
     cfg->ssid[0] = '\0';
     cfg->pass[0] = '\0';
     memset(cfg->wifi, 0, sizeof(cfg->wifi));

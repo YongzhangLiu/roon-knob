@@ -7,6 +7,7 @@
 #include "bridge_client.h"
 #include "wifi_manager.h"
 
+#include <stdlib.h>
 #include <string.h>
 #include <esp_log.h>
 #include <esp_http_server.h>
@@ -19,7 +20,7 @@ static const char *TAG = "config_server";
 static httpd_handle_t s_server = NULL;
 
 // HTML page for config
-// Format args: current_bridge, status_class, status_text, bridge_value
+// Format args: current_bridge, status_class, status_text, wifi_html, bridge_value
 static const char *HTML_CONFIG =
     "<!DOCTYPE html>"
     "<html><head>"
@@ -28,14 +29,16 @@ static const char *HTML_CONFIG =
     "<style>"
     "body{font-family:sans-serif;margin:20px;background:#1a1a2e;color:#eee;}"
     "h1{color:#4fc3f7;margin-bottom:5px;}"
+    "h2{color:#aaa;font-size:16px;margin-top:20px;}"
     ".info{color:#888;margin:10px 0;}"
     "form{background:#16213e;padding:20px;border-radius:10px;max-width:400px;}"
     "label{display:block;margin:15px 0 5px;color:#aaa;}"
-    "input[type=text],input[type=url]{width:100%%;padding:10px;border:1px solid #333;border-radius:5px;background:#0f0f1a;color:#fff;box-sizing:border-box;}"
+    "input[type=text],input[type=url],input[type=password]{width:100%%;padding:10px;border:1px solid #333;border-radius:5px;background:#0f0f1a;color:#fff;box-sizing:border-box;}"
     "input[type=submit]{padding:12px 24px;margin-top:20px;background:#4fc3f7;color:#000;border:none;border-radius:5px;font-weight:bold;cursor:pointer;}"
     "input[type=submit]:hover{background:#29b6f6;}"
     ".btn-clear{background:#ff7043;}"
     ".btn-clear:hover{background:#ff5722;}"
+    ".btn-sm{padding:6px 12px;margin:0 0 0 10px;font-size:12px;}"
     ".current{background:#0f0f1a;padding:10px;border-radius:5px;margin:10px 0;font-family:monospace;}"
     ".status{padding:10px;border-radius:5px;margin:10px 0;}"
     ".status-ok{background:#1b5e20;}"
@@ -43,6 +46,8 @@ static const char *HTML_CONFIG =
     ".status-err{background:#b71c1c;}"
     ".hint{font-size:12px;color:#666;margin-top:4px;}"
     ".success{background:#2e7d32;padding:15px;border-radius:5px;margin:15px 0;}"
+    ".wifi-entry{background:#0f0f1a;padding:8px 12px;border-radius:5px;margin:4px 0;display:flex;justify-content:space-between;align-items:center;max-width:400px;}"
+    ".section{max-width:400px;}"
     "</style></head><body>"
     "<h1>Roon Knob</h1>"
     "<p class='info'>Configure your Roon Knob settings</p>"
@@ -52,7 +57,20 @@ static const char *HTML_CONFIG =
     "<div class='status %s'>"
     "<strong>Status:</strong> %s"
     "</div>"
+        "<h2>Saved WiFi Networks</h2>"
+        "<div class='section'>%s</div>"
+        "<p class='hint'>Saved-network changes take effect after restart.</p>"
+    "<form method='POST' action='/wifi-add'>"
+    "<h2>Add WiFi Network</h2>"
+    "<label>SSID</label>"
+    "<input type='text' name='ssid' maxlength='32' placeholder='Network name' required>"
+    "<label>Password</label>"
+        "<input type='password' name='pass' maxlength='64' placeholder='Password (optional)'>"
+        "<p class='hint'>Up to two networks. Remove one before replacing it.</p>"
+    "<input type='submit' value='Add Network'>"
+    "</form>"
     "<form method='POST' action='/config'>"
+    "<h2>Bridge Override</h2>"
     "<label>Bridge URL</label>"
     "<input type='url' name='bridge' maxlength='128' placeholder='http://192.168.1.x:8088' value='%s'>"
     "<p class='hint'>Leave empty for mDNS auto-discovery. Check the Roon Knob display for connection progress.</p>"
@@ -100,7 +118,13 @@ static bool get_form_field(const char *data, const char *field, char *out, size_
     char search[64];
     snprintf(search, sizeof(search), "%s=", field);
 
-    const char *start = strstr(data, search);
+    const char *start = data;
+    while ((start = strstr(start, search)) != NULL) {
+        if (start == data || *(start - 1) == '&') {
+            break;
+        }
+        start++;
+    }
     if (!start) {
         return false;
     }
@@ -127,6 +151,30 @@ static bool get_form_field(const char *data, const char *field, char *out, size_
     memcpy(out, encoded, decoded_len);
     out[decoded_len] = '\0';
     return true;
+}
+
+static void html_escape(const char *src, char *dst, size_t dst_len) {
+    size_t pos = 0;
+    for (size_t i = 0; src && src[i] && pos + 1 < dst_len; i++) {
+        const char *escaped = NULL;
+        switch (src[i]) {
+            case '&': escaped = "&amp;"; break;
+            case '<': escaped = "&lt;"; break;
+            case '>': escaped = "&gt;"; break;
+            case '"': escaped = "&quot;"; break;
+            case '\'': escaped = "&#39;"; break;
+            default: break;
+        }
+        if (escaped) {
+            size_t len = strlen(escaped);
+            if (pos + len >= dst_len) break;
+            memcpy(dst + pos, escaped, len);
+            pos += len;
+        } else {
+            dst[pos++] = src[i];
+        }
+    }
+    dst[pos] = '\0';
 }
 
 // Resolve .local hostname in URL to IP address via mDNS
@@ -211,14 +259,38 @@ static esp_err_t config_get_handler(httpd_req_t *req) {
         snprintf(status_text, sizeof(status_text), "Connecting...");
     }
 
-    // Build HTML with current values and status
-    char *html = malloc(2560);
+    char wifi_html[1024] = "";
+    size_t wifi_pos = 0;
+    for (int i = 0; i < cfg.wifi_count && i < RK_MAX_WIFI; i++) {
+        char escaped_ssid[192];
+        html_escape(cfg.wifi[i].ssid, escaped_ssid, sizeof(escaped_ssid));
+        int written = snprintf(
+            wifi_html + wifi_pos, sizeof(wifi_html) - wifi_pos,
+            "<div class='wifi-entry'><span>%d. %s</span>"
+            "<form method='POST' action='/wifi-remove' style='display:inline;margin:0;padding:0;'>"
+            "<input type='hidden' name='idx' value='%d'>"
+            "<input type='submit' value='Remove' class='btn-sm btn-clear'>"
+            "</form></div>",
+            i + 1, escaped_ssid, i);
+        if (written < 0 || (size_t)written >= sizeof(wifi_html) - wifi_pos) {
+            break;
+        }
+        wifi_pos += (size_t)written;
+    }
+    if (wifi_pos == 0) {
+        snprintf(wifi_html, sizeof(wifi_html),
+                 "<div class='wifi-entry'><em>No saved networks</em></div>");
+    }
+
+    // Build HTML with current values, saved networks, and bridge status.
+    char *html = malloc(4096);
     if (!html) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
         return ESP_FAIL;
     }
 
-    snprintf(html, 2560, HTML_CONFIG, current, status_class, status_text, cfg.bridge_base);
+    snprintf(html, 4096, HTML_CONFIG, current, status_class, status_text,
+             wifi_html, cfg.bridge_base);
 
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, html, strlen(html));
@@ -277,7 +349,8 @@ static esp_err_t config_post_handler(httpd_req_t *req) {
         ESP_LOGI(TAG, "Bridge URL set to: %s", cfg.bridge_base[0] ? cfg.bridge_base : "(mDNS)");
     }
 
-    if (!platform_storage_save(&cfg)) {
+    if (!bridge_client_store_bridge_base(cfg.bridge_base,
+                                         cfg.bridge_from_mdns != 0)) {
         ESP_LOGE(TAG, "Failed to save config");
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to save");
         return ESP_FAIL;
@@ -303,6 +376,88 @@ static esp_err_t config_post_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
+static esp_err_t wifi_add_handler(httpd_req_t *req) {
+    char buf[384] = {0};
+    int received = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (received <= 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No data received");
+        return ESP_FAIL;
+    }
+    buf[received] = '\0';
+
+    char ssid[33] = {0};
+    char pass[65] = {0};
+    if (!get_form_field(buf, "ssid", ssid, sizeof(ssid)) || !ssid[0]) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing SSID");
+        return ESP_FAIL;
+    }
+    get_form_field(buf, "pass", pass, sizeof(pass));
+
+    rk_cfg_t cfg = {0};
+    platform_storage_load(&cfg);
+    if (rk_cfg_add_wifi(&cfg, ssid, pass) < 0) {
+        httpd_resp_set_status(req, "409 Conflict");
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_sendstr(req,
+                          "Two networks are already saved; remove one first");
+        return ESP_FAIL;
+    }
+    rk_cfg_sync_primary_wifi(&cfg);
+    cfg.cfg_ver = RK_CFG_CURRENT_VER;
+    if (!bridge_client_store_local_connectivity(&cfg)) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to save");
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "Added WiFi '%s' to this Dial (%d saved)", ssid,
+             cfg.wifi_count);
+    httpd_resp_set_status(req, "303 See Other");
+    httpd_resp_set_hdr(req, "Location", "/");
+    httpd_resp_sendstr(req, "Redirecting...");
+    return ESP_OK;
+}
+
+static esp_err_t wifi_remove_handler(httpd_req_t *req) {
+    char buf[64] = {0};
+    int received = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (received <= 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No data received");
+        return ESP_FAIL;
+    }
+    buf[received] = '\0';
+
+    char idx_text[8] = {0};
+    if (!get_form_field(buf, "idx", idx_text, sizeof(idx_text))) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing index");
+        return ESP_FAIL;
+    }
+    char *end = NULL;
+    long parsed = strtol(idx_text, &end, 10);
+    if (end == idx_text || *end != '\0' || parsed < 0 || parsed >= RK_MAX_WIFI) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid index");
+        return ESP_FAIL;
+    }
+
+    rk_cfg_t cfg = {0};
+    platform_storage_load(&cfg);
+    int idx = (int)parsed;
+    if (idx < cfg.wifi_count) {
+        ESP_LOGI(TAG, "Removing WiFi '%s' from this Dial", cfg.wifi[idx].ssid);
+        rk_cfg_remove_wifi(&cfg, idx);
+        rk_cfg_sync_primary_wifi(&cfg);
+        if (!bridge_client_store_local_connectivity(&cfg)) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                                "Failed to save");
+            return ESP_FAIL;
+        }
+    }
+
+    httpd_resp_set_status(req, "303 See Other");
+    httpd_resp_set_hdr(req, "Location", "/");
+    httpd_resp_sendstr(req, "Redirecting...");
+    return ESP_OK;
+}
+
 void config_server_start(void) {
     if (s_server) {
         ESP_LOGW(TAG, "Config server already running");
@@ -311,7 +466,7 @@ void config_server_start(void) {
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
-    config.max_uri_handlers = 4;
+    config.max_uri_handlers = 8;
     config.stack_size = 8192;  // Increased for mDNS resolution during config save
     // Note: max_req_hdr_len set via CONFIG_HTTPD_MAX_REQ_HDR_LEN in sdkconfig
 
@@ -336,6 +491,20 @@ void config_server_start(void) {
         .handler = config_post_handler,
     };
     httpd_register_uri_handler(s_server, &config_post);
+
+    httpd_uri_t wifi_add = {
+        .uri = "/wifi-add",
+        .method = HTTP_POST,
+        .handler = wifi_add_handler,
+    };
+    httpd_register_uri_handler(s_server, &wifi_add);
+
+    httpd_uri_t wifi_remove = {
+        .uri = "/wifi-remove",
+        .method = HTTP_POST,
+        .handler = wifi_remove_handler,
+    };
+    httpd_register_uri_handler(s_server, &wifi_remove);
 
     ESP_LOGI(TAG, "Config server started");
 }

@@ -66,10 +66,10 @@ volume, zones, playlists, and programs.
 
 ### Key Constraints
 
-- Preserve proven behavior from current `master`: Frame/e-ink and BLE HID already
-  exist there. `origin/v4` is a salvage/reference source and the known-working
-  Dial build profile, not the provenance of those features and not a wholesale
-  merge target.
+- Preserve the proven Frame/e-ink and BLE HID behavior from historical mainline
+  commit `46599a6`. `origin/v4` is a salvage/reference source and the
+  known-working Dial build profile, not the provenance of those features and not
+  a wholesale merge target.
 - Hardware claims must be tied to an exact target/revision. Do not infer flash,
   PSRAM, display, touch, power, or pin capabilities from a product-family name.
 - Device-specific UI and input drivers may be compile-time inclusions; playback,
@@ -79,9 +79,9 @@ volume, zones, playlists, and programs.
   relevant display/input/connectivity checks on physical hardware.
 - CI release builds must use an optimized, evidence-backed configuration. The
   recovery baseline carries v4's non-debug build settings onto master (PERF
-  optimization and a 16 MB merged image). ESP-IDF 5.4.3 is the last
-  hardware-proven release baseline; a newer toolchain requires its own exact
-  artifact hardware evidence before it is treated as a release baseline.
+  optimization and a 16 MB merged image). The v2.5.2 Dial artifact establishes
+  ESP-IDF 5.5.5 as hardware-proven for Dial; each additional target, including
+  Frame, still requires exact-artifact hardware evidence.
 - This is a side project: prefer incremental factoring with shippable slices over
   an unbounded rewrite.
 

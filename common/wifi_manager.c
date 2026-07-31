@@ -15,6 +15,7 @@
 #include "sdkconfig.h"
 
 #include "platform/platform_storage.h"
+#include "platform/platform_identity.h"
 
 static const char *TAG = "wifi_mgr";
 static const uint32_t s_backoff_ms[] = {500, 1000, 2000, 4000, 8000, 16000, 30000};
@@ -69,7 +70,6 @@ static const char *get_disconnect_reason_str(uint8_t reason, rk_net_evt_t *out_e
 }
 
 // AP mode configuration
-#define AP_SSID "roon-knob-setup"
 #define AP_MAX_CONNECTIONS 2
 #define STA_FAIL_THRESHOLD 5  // Switch to AP after this many consecutive STA failures
 
@@ -84,6 +84,7 @@ static char s_ip[16];
 static bool s_ap_mode;           // true when in AP provisioning mode
 static int s_sta_fail_count;     // consecutive STA connection failures
 static char s_device_hostname[32] = {0};  // cached network hostname
+static int s_wifi_idx;           // index into this device's saved WiFi list
 
 static void copy_str(char *dst, size_t dst_len, const char *src) {
     if (!dst || dst_len == 0) {
@@ -130,7 +131,7 @@ static void sanitize_hostname(const char *input, char *output, size_t output_len
 
     // If sanitization resulted in empty string, use fallback
     if (j == 0) {
-        snprintf(output, output_len, "roon-knob");
+        snprintf(output, output_len, "%s", platform_device_slug());
     }
 }
 
@@ -154,12 +155,13 @@ static const char *get_device_hostname(void) {
     esp_err_t err = esp_read_mac(mac, ESP_MAC_WIFI_STA);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Failed to read MAC for hostname: %s", esp_err_to_name(err));
-        snprintf(s_device_hostname, sizeof(s_device_hostname), "roon-knob");
+        snprintf(s_device_hostname, sizeof(s_device_hostname), "%s",
+                 platform_device_slug());
         return s_device_hostname;
     }
 
-    snprintf(s_device_hostname, sizeof(s_device_hostname), "roon-knob-%02x%02x%02x",
-             mac[3], mac[4], mac[5]);
+    snprintf(s_device_hostname, sizeof(s_device_hostname), "%s-%02x%02x%02x",
+             platform_device_slug(), mac[3], mac[4], mac[5]);
     ESP_LOGI(TAG, "Generated MAC-based hostname: %s", s_device_hostname);
     return s_device_hostname;
 }
@@ -168,12 +170,26 @@ static bool have_blob(const rk_cfg_t *cfg) {
     return cfg && cfg->cfg_ver != 0;
 }
 
+static void sync_active_wifi(rk_cfg_t *cfg) {
+    if (s_wifi_idx >= 0 && s_wifi_idx < cfg->wifi_count &&
+        s_wifi_idx < RK_MAX_WIFI) {
+        copy_str(cfg->ssid, sizeof(cfg->ssid), cfg->wifi[s_wifi_idx].ssid);
+        copy_str(cfg->pass, sizeof(cfg->pass), cfg->wifi[s_wifi_idx].pass);
+    } else {
+        cfg->ssid[0] = '\0';
+        cfg->pass[0] = '\0';
+    }
+}
+
 static void apply_wifi_defaults(rk_cfg_t *cfg) {
     if (!cfg) {
         return;
     }
-    copy_str(cfg->ssid, sizeof(cfg->ssid), CONFIG_RK_DEFAULT_SSID);
-    copy_str(cfg->pass, sizeof(cfg->pass), CONFIG_RK_DEFAULT_PASS);
+    if (CONFIG_RK_DEFAULT_SSID[0] && cfg->wifi_count == 0) {
+        rk_cfg_add_wifi(cfg, CONFIG_RK_DEFAULT_SSID, CONFIG_RK_DEFAULT_PASS);
+    }
+    s_wifi_idx = 0;
+    sync_active_wifi(cfg);
     // Don't set bridge_base here - mDNS discovery is the primary method
 }
 
@@ -192,16 +208,20 @@ static void ensure_cfg_loaded(void) {
     bool load_ok = platform_storage_load(&cfg);
     (void)load_ok;  // Unused but kept for clarity
     bool blob_exists = have_blob(&cfg);
-    bool has_wifi_creds = (cfg.ssid[0] != '\0');
 
     if (!blob_exists) {
         apply_full_defaults(&cfg);
         platform_storage_save(&cfg);
-    } else if (!has_wifi_creds) {
-        // Apply WiFi defaults when SSID is empty
+    } else if (cfg.wifi_count == 0 && cfg.ssid[0] != '\0') {
+        // Complete a local legacy upgrade if the loader has not persisted it yet.
+        rk_cfg_add_wifi(&cfg, cfg.ssid, cfg.pass);
+        platform_storage_save(&cfg);
+    } else if (cfg.wifi_count == 0) {
         apply_wifi_defaults(&cfg);
         platform_storage_save(&cfg);
     }
+    s_wifi_idx = 0;
+    sync_active_wifi(&cfg);
     s_cfg = cfg;
     s_cfg_loaded = true;
 }
@@ -272,6 +292,9 @@ static void retry_timer_cb(void *arg) {
 }
 
 static void schedule_retry_with_reason(uint8_t reason) {
+    if (s_ap_mode) {
+        return;
+    }
     s_sta_fail_count++;
 
     // Get human-readable reason and specific event type
@@ -281,9 +304,21 @@ static void schedule_retry_with_reason(uint8_t reason) {
     ESP_LOGW(TAG, "WiFi disconnected: %s (reason %d, attempt %d/%d)",
              s_last_error, reason, s_sta_fail_count, STA_FAIL_THRESHOLD);
 
-    // Switch to AP mode after too many failures
+    // Try each network saved on this device before entering provisioning mode.
     if (s_sta_fail_count >= STA_FAIL_THRESHOLD) {
-        ESP_LOGW(TAG, "Too many STA failures, switching to AP mode for provisioning");
+        s_wifi_idx++;
+        if (s_wifi_idx < s_cfg.wifi_count && s_wifi_idx < RK_MAX_WIFI) {
+            ESP_LOGW(TAG, "WiFi '%s' failed %d times; trying saved network '%s'",
+                     s_cfg.ssid, STA_FAIL_THRESHOLD,
+                     s_cfg.wifi[s_wifi_idx].ssid);
+            s_sta_fail_count = 0;
+            reset_backoff();
+            sync_active_wifi(&s_cfg);
+            connect_now();
+            return;
+        }
+        ESP_LOGW(TAG, "All %d saved WiFi networks failed; starting provisioning",
+                 s_cfg.wifi_count);
         start_ap_mode();
         return;
     }
@@ -360,9 +395,13 @@ static void start_ap_mode(void) {
         return;  // Already in AP mode
     }
 
-    ESP_LOGI(TAG, "Starting AP mode for provisioning (SSID: %s)", AP_SSID);
+    const char *ap_ssid = platform_provisioning_ssid();
+    ESP_LOGI(TAG, "Starting AP mode for provisioning (SSID: %s)", ap_ssid);
 
-    // Stop STA mode
+    // Mark the transition before stopping STA. esp_wifi_stop() can emit a
+    // disconnect event synchronously; the event handler must not schedule
+    // another retry/AP transition while this one is in progress.
+    s_ap_mode = true;
     esp_wifi_stop();
 
     // Create AP netif if needed
@@ -378,17 +417,13 @@ static void start_ap_mode(void) {
     }
 
     // Configure AP with optimal settings for discoverability
-    wifi_config_t ap_config = {
-        .ap = {
-            .ssid = AP_SSID,
-            .ssid_len = strlen(AP_SSID),
-            .channel = 6,  // Channel 6 is often less congested than 1
-            .password = "",  // Open network for easy provisioning
-            .max_connection = AP_MAX_CONNECTIONS,
-            .authmode = WIFI_AUTH_OPEN,
-            .beacon_interval = 100,  // Minimum beacon interval (100 TUs ≈ 102ms)
-        },
-    };
+    wifi_config_t ap_config = {0};
+    copy_str((char *)ap_config.ap.ssid, sizeof(ap_config.ap.ssid), ap_ssid);
+    ap_config.ap.ssid_len = strlen((char *)ap_config.ap.ssid);
+    ap_config.ap.channel = 6;
+    ap_config.ap.max_connection = AP_MAX_CONNECTIONS;
+    ap_config.ap.authmode = WIFI_AUTH_OPEN;
+    ap_config.ap.beacon_interval = 100;
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
@@ -404,7 +439,6 @@ static void start_ap_mode(void) {
         ESP_LOGW(TAG, "AP mode: Could not set TX power: %s", esp_err_to_name(tx_err));
     }
 
-    s_ap_mode = true;
     s_sta_fail_count = 0;
 
     // Start captive portal HTTP server
@@ -412,6 +446,14 @@ static void start_ap_mode(void) {
 
     // Notify UI that we're in AP mode (IP is always 192.168.4.1 for AP)
     rk_net_evt_cb(RK_NET_EVT_AP_STARTED, "192.168.4.1");
+}
+
+void wifi_mgr_start_provisioning(void) {
+    if (!s_started) {
+        ESP_LOGW(TAG, "Provisioning requested before WiFi manager start");
+        return;
+    }
+    start_ap_mode();
 }
 
 void wifi_mgr_start(void) {
@@ -489,6 +531,11 @@ void wifi_mgr_reconnect(const rk_cfg_t *cfg) {
     }
     s_cfg = *cfg;
     s_cfg_loaded = true;
+    s_wifi_idx = 0;
+    if (s_cfg.wifi_count == 0 && s_cfg.ssid[0] != '\0') {
+        rk_cfg_add_wifi(&s_cfg, s_cfg.ssid, s_cfg.pass);
+    }
+    sync_active_wifi(&s_cfg);
     if (!platform_storage_save(&s_cfg)) {
         ESP_LOGW(TAG, "failed to persist cfg");
     }
@@ -591,6 +638,8 @@ void wifi_mgr_stop(void) {
     s_started = false;
     s_ap_mode = false;
     s_sta_fail_count = 0;
+    s_wifi_idx = 0;
+    sync_active_wifi(&s_cfg);
     s_ip[0] = '\0';
 
     ESP_LOGI(TAG, "WiFi stopped");
@@ -609,13 +658,15 @@ void wifi_mgr_stop_ap(void) {
     // Stop AP
     esp_wifi_stop();
 
-    // Switch to STA mode
+    // Switch to STA mode. Clear the transition flag before start so the
+    // STA_START event can initiate the first connection attempt.
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_start());
-
     s_ap_mode = false;
     s_sta_fail_count = 0;
+    s_wifi_idx = 0;
+    sync_active_wifi(&s_cfg);
     s_ip[0] = '\0';
+    ESP_ERROR_CHECK(esp_wifi_start());
 
     rk_net_evt_cb(RK_NET_EVT_AP_STOPPED, NULL);
 

@@ -11,10 +11,6 @@
 #include "controller_input.h"
 #include "controller_presentation.h"
 
-#ifdef ESP_PLATFORM
-#include "display_sleep.h"
-#endif
-
 #include <ctype.h>
 #include <stddef.h>
 #include <stdbool.h>
@@ -46,6 +42,7 @@ static void check_charging_state_change(void);
 struct now_playing_state {
     char line1[MAX_LINE];
     char line2[MAX_LINE];
+    char line3[MAX_LINE];
     bool is_playing;
     float volume;
     float volume_min;
@@ -126,6 +123,13 @@ static void unlock_state(void) {
     os_mutex_unlock(&s_state_lock);
 }
 
+// Caller holds s_state_lock. Serializing every controller-owned config write
+// through this helper prevents a stale full-struct save from overwriting a
+// connected settings update to this device's WiFi list.
+static bool persist_state_config_locked(void) {
+    return platform_storage_save(&s_state.cfg);
+}
+
 static bool fetch_now_playing(struct now_playing_state *state);
 static bool refresh_zone_label(bool prefer_zone_id);
 static void parse_zones_from_response(const char *resp);
@@ -158,7 +162,11 @@ static void ui_update_cb(void *arg) {
     s_last_known_volume_min = state->volume_min;
     s_last_known_volume_max = state->volume_max;
     s_last_known_volume_step = state->volume_step;
-    controller_presentation_update(state->line1, state->line2, state->is_playing, state->volume, state->volume_min, state->volume_max, state->volume_step, state->seek_position, state->length);
+    controller_presentation_update(state->line1, state->line2, state->line3,
+                                   state->is_playing, state->volume,
+                                   state->volume_min, state->volume_max,
+                                   state->volume_step, state->seek_position,
+                                   state->length);
 
     // Update artwork if image_key changed or forced refresh
     static char last_image_key[128] = "";
@@ -205,6 +213,52 @@ static void ui_message_cb(void *arg) {
     free(msg);
 }
 
+static void ui_network_status_cb(void *arg) {
+    char *status = arg;
+    if (!status) {
+        return;
+    }
+    controller_presentation_set_network_status(status);
+    free(status);
+}
+
+static void post_ui_network_status(const char *status) {
+    char *copy = strdup(status ? status : "");
+    if (!copy) {
+        return;
+    }
+    if (!platform_task_post_to_ui(ui_network_status_cb, copy)) {
+        free(copy);
+    }
+}
+
+typedef struct {
+    char line1[96];
+    char line2[96];
+} connectivity_update_t;
+
+static void ui_connectivity_update_cb(void *arg) {
+    connectivity_update_t *update = arg;
+    if (!update) {
+        return;
+    }
+    controller_presentation_update(update->line1, update->line2, "",
+                                   false, 0.0f, 0.0f, 100.0f, 1.0f, 0, 0);
+    free(update);
+}
+
+static void post_ui_connectivity_update(const char *line1, const char *line2) {
+    connectivity_update_t *update = calloc(1, sizeof(*update));
+    if (!update) {
+        return;
+    }
+    rk_strlcpy(update->line1, line1 ? line1 : "", sizeof(update->line1));
+    rk_strlcpy(update->line2, line2 ? line2 : "", sizeof(update->line2));
+    if (!platform_task_post_to_ui(ui_connectivity_update_cb, update)) {
+        free(update);
+    }
+}
+
 static void ui_zone_name_cb(void *arg) {
     char *name = arg;
     if (!name) {
@@ -229,6 +283,7 @@ static void default_now_playing(struct now_playing_state *state) {
     }
     snprintf(state->line1, sizeof(state->line1), "Idle");
     state->line2[0] = '\0';
+    state->line3[0] = '\0';
     state->is_playing = false;
     state->volume = 0.0f;
     state->volume_min = -80.0f;
@@ -248,11 +303,15 @@ static void post_ui_update(const struct now_playing_state *state) {
         return;
     }
     *copy = *state;
-    platform_task_post_to_ui(ui_update_cb, copy);
+    if (!platform_task_post_to_ui(ui_update_cb, copy)) {
+        free(copy);
+    }
 }
 
 static void post_ui_status_copy(bool *status_copy) {
-    platform_task_post_to_ui(ui_status_cb, status_copy);
+    if (!platform_task_post_to_ui(ui_status_cb, status_copy)) {
+        free(status_copy);
+    }
 }
 
 static void post_ui_status(bool online) {
@@ -265,7 +324,9 @@ static void post_ui_status(bool online) {
 }
 
 static void post_ui_message_copy(char *msg_copy) {
-    platform_task_post_to_ui(ui_message_cb, msg_copy);
+    if (!platform_task_post_to_ui(ui_message_cb, msg_copy)) {
+        free(msg_copy);
+    }
 }
 
 static void post_ui_message(const char *msg) {
@@ -280,7 +341,9 @@ static void post_ui_message(const char *msg) {
 }
 
 static void post_ui_zone_name_copy(char *name_copy) {
-    platform_task_post_to_ui(ui_zone_name_cb, name_copy);
+    if (!platform_task_post_to_ui(ui_zone_name_cb, name_copy)) {
+        free(name_copy);
+    }
 }
 
 static void post_ui_zone_name(const char *name) {
@@ -365,7 +428,9 @@ static void maybe_update_bridge_base(void) {
         s_state.cfg.bridge_base[sizeof(s_state.cfg.bridge_base) - 1] = '\0';
         strip_trailing_slashes(s_state.cfg.bridge_base);
         s_state.cfg.bridge_from_mdns = 1;  // Persist mDNS source
-        platform_storage_save(&s_state.cfg);
+        if (!persist_state_config_locked()) {
+            LOGW("Could not persist discovered bridge");
+        }
         unlock_state();
         post_ui_message("Bridge: Found");
         return;
@@ -438,6 +503,10 @@ static bool fetch_now_playing(struct now_playing_state *state) {
     const char *line2 = strstr(resp, "\"line2\"");
     if (line2) {
         extract_json_string(line2, "\"line2\"", state->line2, sizeof(state->line2));
+    }
+    const char *line3 = strstr(resp, "\"line3\"");
+    if (line3) {
+        extract_json_string(line3, "\"line3\"", state->line3, sizeof(state->line3));
     }
     state->is_playing = strstr(resp, "\"is_playing\":true") != NULL;
 
@@ -594,7 +663,7 @@ static bool refresh_zone_label(bool prefer_zone_id) {
         if (s_device_state != DEVICE_STATE_OPERATIONAL) {
             LOGI("Device state: %s -> OPERATIONAL (zones loaded)", device_state_name(s_device_state));
             s_device_state = DEVICE_STATE_OPERATIONAL;
-            controller_presentation_set_network_status(NULL);  // Clear status banner when ready
+            post_ui_network_status("");  // Clear status banner when ready
         }
         success = should_sync && zone_label_copy[0] != '\0';
     }
@@ -603,7 +672,12 @@ static bool refresh_zone_label(bool prefer_zone_id) {
     platform_http_free(resp);
     if (success) {
         LOGI("refresh_zone_label: Selected zone '%s', posting to UI", zone_label_copy);
-        platform_storage_save(&s_state.cfg);
+        lock_state();
+        bool saved = persist_state_config_locked();
+        unlock_state();
+        if (!saved) {
+            LOGW("Could not persist selected zone");
+        }
         post_ui_zone_name(zone_label_copy);
     } else {
         LOGI("refresh_zone_label: No zone selected (success=false)");
@@ -749,7 +823,7 @@ static void bridge_poll_thread(void *arg) {
                 // Just connected - clear status, restore zone name, mark verified
                 reset_bridge_fail_count();
                 post_ui_message("Bridge: Connected");
-                controller_presentation_set_network_status(NULL);
+                post_ui_network_status("");
                 s_bridge_verified = true;
                 // Restore zone name (was cleared during error display)
                 lock_state();
@@ -758,7 +832,7 @@ static void bridge_poll_thread(void *arg) {
                 zone_name_copy[sizeof(zone_name_copy) - 1] = '\0';
                 unlock_state();
                 if (zone_name_copy[0]) {
-                    controller_presentation_set_zone_name(zone_name_copy);
+                    post_ui_zone_name(zone_name_copy);
                 }
             }
         } else if (!ok && s_last_net_ok) {
@@ -769,9 +843,9 @@ static void bridge_poll_thread(void *arg) {
             char line1_msg[64];
             snprintf(line1_msg, sizeof(line1_msg), "Attempt %d of %d...",
                      s_bridge_fail_count, BRIDGE_FAIL_THRESHOLD);
-            controller_presentation_set_zone_name("");  // Clear zone name to avoid overlay
-            controller_presentation_update(line1_msg, "Testing Bridge", false, 0.0f, 0.0f, 100.0f, 1.0f, 0, 0);
-            controller_presentation_set_network_status("Bridge: Offline - retrying...");
+            post_ui_zone_name("");  // Clear zone name to avoid overlay
+            post_ui_connectivity_update(line1_msg, "Testing Bridge");
+            post_ui_network_status("Bridge: Offline - retrying...");
         } else if (!ok && !s_last_net_ok) {
             // Still trying to connect - check if we have a bridge URL
             lock_state();
@@ -784,7 +858,7 @@ static void bridge_poll_thread(void *arg) {
                 char line1_msg[64];
                 char line2_msg[64];
                 char status_msg[96];
-                controller_presentation_set_zone_name("");  // Clear zone name to avoid overlay
+                post_ui_zone_name("");  // Clear zone name to avoid overlay
 
                 if (s_mdns_fail_count >= MDNS_FAIL_THRESHOLD) {
                     // mDNS search exhausted - show recovery info
@@ -799,16 +873,16 @@ static void bridge_poll_thread(void *arg) {
                         snprintf(status_msg, sizeof(status_msg),
                                  "mDNS failed. Configure Bridge in Settings.");
                     }
-                    controller_presentation_update(line1_msg, line2_msg, false, 0.0f, 0.0f, 100.0f, 1.0f, 0, 0);
-                    controller_presentation_set_network_status(status_msg);
+                    post_ui_connectivity_update(line1_msg, line2_msg);
+                    post_ui_network_status(status_msg);
                 } else {
                     // Still searching - show progress
                     snprintf(line1_msg, sizeof(line1_msg), "Attempt %d of %d...",
                              s_mdns_fail_count + 1, MDNS_FAIL_THRESHOLD);
-                    controller_presentation_update(line1_msg, "Searching for Bridge", false, 0.0f, 0.0f, 100.0f, 1.0f, 0, 0);
+                    post_ui_connectivity_update(line1_msg, "Searching for Bridge");
                     snprintf(status_msg, sizeof(status_msg), "mDNS: %d/%d",
                              s_mdns_fail_count + 1, MDNS_FAIL_THRESHOLD);
-                    controller_presentation_set_network_status(status_msg);
+                    post_ui_network_status(status_msg);
                 }
             } else {
                 // Bridge URL configured but not responding - show retry progress
@@ -832,19 +906,19 @@ static void bridge_poll_thread(void *arg) {
                         snprintf(status_msg, sizeof(status_msg),
                                  "Bridge unreachable. Check Settings.");
                     }
-                    controller_presentation_set_zone_name("");  // Clear zone name to avoid overlay
-                    controller_presentation_update(line1_msg, line2_msg, false, 0.0f, 0.0f, 100.0f, 1.0f, 0, 0);
-                    controller_presentation_set_network_status(status_msg);
+                    post_ui_zone_name("");  // Clear zone name to avoid overlay
+                    post_ui_connectivity_update(line1_msg, line2_msg);
+                    post_ui_network_status(status_msg);
                 } else {
                     // Still retrying - show progress on main display
                     // line1=main content (bottom), line2=header (top)
                     snprintf(line1_msg, sizeof(line1_msg), "Attempt %d of %d...",
                              s_bridge_fail_count, BRIDGE_FAIL_THRESHOLD);
-                    controller_presentation_set_zone_name("");  // Clear zone name to avoid overlay
-                    controller_presentation_update(line1_msg, "Testing Bridge", false, 0.0f, 0.0f, 100.0f, 1.0f, 0, 0);
+                    post_ui_zone_name("");  // Clear zone name to avoid overlay
+                    post_ui_connectivity_update(line1_msg, "Testing Bridge");
                     snprintf(status_msg, sizeof(status_msg), "Bridge: Retry %d/%d",
                              s_bridge_fail_count, BRIDGE_FAIL_THRESHOLD);
-                    controller_presentation_set_network_status(status_msg);
+                    post_ui_network_status(status_msg);
                 }
             }
         }
@@ -862,7 +936,11 @@ void bridge_client_start(const rk_cfg_t *cfg) {
     s_state.cfg = *cfg;
     strncpy(s_state.zone_label, cfg->zone_id[0] ? cfg->zone_id : "Tap here to select zone", sizeof(s_state.zone_label) - 1);
     s_state.zone_label[sizeof(s_state.zone_label) - 1] = '\0';
+    char initial_zone_label[MAX_ZONE_NAME];
+    rk_strlcpy(initial_zone_label, s_state.zone_label,
+               sizeof(initial_zone_label));
     unlock_state();
+    post_ui_zone_name(initial_zone_label);
 
     // Always apply config on startup (uses defaults if no saved config)
     // This ensures rotation is applied even on fresh devices
@@ -942,11 +1020,14 @@ void bridge_client_handle_input(controller_input_action_t event) {
             if (!updated) {
                 LOGW("Zone picker: zone id '%s' not found in zone list", selected_id);
             }
+            bool saved = !updated || persist_state_config_locked();
             unlock_state();
             // Hide picker FIRST to ensure it closes before any async operations
             controller_presentation_hide_zone_picker();
             if (updated) {
-                platform_storage_save(&s_state.cfg);
+                if (!saved) {
+                    LOGW("Could not persist selected zone");
+                }
                 post_ui_zone_name(label_copy);
                 post_ui_message("Loading zone...");
             }
@@ -1126,11 +1207,12 @@ void bridge_client_handle_volume_rotation(int ticks) {
 void bridge_client_set_network_ready(bool ready) {
     s_network_ready = ready;
 
+    const char *network_status;
     lock_state();
     if (ready) {
         LOGI("Device state: %s -> CONNECTED (network ready)", device_state_name(s_device_state));
         s_device_state = DEVICE_STATE_CONNECTED;  // Transition: WiFi connected, zones not yet loaded
-        controller_presentation_set_network_status("Loading zones...");
+        network_status = "Loading zones...";
         s_trigger_poll = true;  // Trigger immediate poll when network becomes ready
     } else {
         // Transition to RECONNECTING if we were operational, otherwise back to BOOT
@@ -1139,14 +1221,29 @@ void bridge_client_set_network_ready(bool ready) {
             : DEVICE_STATE_BOOT;
         LOGI("Device state: %s -> %s (network lost)", device_state_name(s_device_state), device_state_name(new_state));
         s_device_state = new_state;
-        controller_presentation_set_network_status(new_state == DEVICE_STATE_RECONNECTING ? "Reconnecting..." : "Connecting...");
+        network_status = new_state == DEVICE_STATE_RECONNECTING
+            ? "Reconnecting..."
+            : "Connecting...";
     }
     unlock_state();
+    post_ui_network_status(network_status);
 }
 
 const char* bridge_client_get_artwork_url(char *url_buf, size_t buf_len, int width, int height) {
+    return bridge_client_get_artwork_url_for_format(url_buf, buf_len, width,
+                                                    height, 0, "rgb565");
+}
+
+const char* bridge_client_get_artwork_url_for_format(char *url_buf, size_t buf_len,
+                                                     int width, int height,
+                                                     int clip_radius,
+                                                     const char *format) {
     if (!url_buf || buf_len < 256) {
         return NULL;
+    }
+
+    if (!format || !format[0]) {
+        format = "rgb565";
     }
 
     lock_state();
@@ -1158,9 +1255,15 @@ const char* bridge_client_get_artwork_url(char *url_buf, size_t buf_len, int wid
         return NULL;
     }
 
-    snprintf(url_buf, buf_len,
-             "%s/now_playing/image?zone_id=%s&scale=fit&width=%d&height=%d&format=rgb565",
-             bridge_base, zone_id, width, height);
+    if (clip_radius > 0) {
+        snprintf(url_buf, buf_len,
+                 "%s/now_playing/image?zone_id=%s&scale=fit&width=%d&height=%d&format=%s&clip_radius=%d",
+                 bridge_base, zone_id, width, height, format, clip_radius);
+    } else {
+        snprintf(url_buf, buf_len,
+                 "%s/now_playing/image?zone_id=%s&scale=fit&width=%d&height=%d&format=%s",
+                 bridge_base, zone_id, width, height, format);
+    }
     unlock_state();
 
     return url_buf;
@@ -1228,6 +1331,104 @@ bool bridge_client_is_bridge_mdns(void) {
     return from_mdns;
 }
 
+int bridge_client_get_zones(bridge_zone_t *out, int max) {
+    if (!out || max <= 0) {
+        return 0;
+    }
+
+    lock_state();
+    int count = s_state.zone_count < max ? s_state.zone_count : max;
+    for (int i = 0; i < count; ++i) {
+        strncpy(out[i].id, s_state.zones[i].id, sizeof(out[i].id) - 1);
+        out[i].id[sizeof(out[i].id) - 1] = '\0';
+        strncpy(out[i].name, s_state.zones[i].name, sizeof(out[i].name) - 1);
+        out[i].name[sizeof(out[i].name) - 1] = '\0';
+    }
+    unlock_state();
+    return count;
+}
+
+bool bridge_client_get_current_zone_id(char *out, size_t len) {
+    if (!out || len == 0) {
+        return false;
+    }
+
+    lock_state();
+    strncpy(out, s_state.cfg.zone_id, len - 1);
+    out[len - 1] = '\0';
+    unlock_state();
+    return out[0] != '\0';
+}
+
+bool bridge_client_store_local_connectivity(const rk_cfg_t *local_cfg) {
+    lock_state();
+    bool merged = rk_cfg_copy_local_connectivity(&s_state.cfg, local_cfg);
+    bool saved = merged && persist_state_config_locked();
+    unlock_state();
+    return saved;
+}
+
+bool bridge_client_store_bridge_base(const char *bridge_base, bool from_mdns) {
+    if (!bridge_base) {
+        return false;
+    }
+
+    lock_state();
+    rk_strlcpy(s_state.cfg.bridge_base, bridge_base,
+               sizeof(s_state.cfg.bridge_base));
+    s_state.cfg.bridge_from_mdns = from_mdns ? 1 : 0;
+    bool saved = persist_state_config_locked();
+    unlock_state();
+    return saved;
+}
+
+bool bridge_client_set_zone(const char *zone_id) {
+    if (!zone_id || !zone_id[0]) {
+        return false;
+    }
+
+    char label_copy[MAX_ZONE_NAME] = {0};
+    bool found = false;
+    bool saved = false;
+
+    lock_state();
+    for (int i = 0; i < s_state.zone_count; ++i) {
+        struct zone_entry *entry = &s_state.zones[i];
+        if (strcmp(entry->id, zone_id) != 0) {
+            continue;
+        }
+
+        strncpy(s_state.cfg.zone_id, entry->id,
+                sizeof(s_state.cfg.zone_id) - 1);
+        s_state.cfg.zone_id[sizeof(s_state.cfg.zone_id) - 1] = '\0';
+        strncpy(s_state.zone_label, entry->name,
+                sizeof(s_state.zone_label) - 1);
+        s_state.zone_label[sizeof(s_state.zone_label) - 1] = '\0';
+        strncpy(label_copy, s_state.zone_label, sizeof(label_copy) - 1);
+        s_state.zone_resolved = true;
+        s_device_state = DEVICE_STATE_OPERATIONAL;
+        s_trigger_poll = true;
+        s_force_artwork_refresh = true;
+        saved = persist_state_config_locked();
+        found = true;
+        break;
+    }
+    unlock_state();
+
+    if (!found) {
+        LOGW("Zone selection: zone id '%s' not found", zone_id);
+        return false;
+    }
+
+    if (!saved) {
+        LOGW("Zone selection: could not persist zone '%s'", zone_id);
+        return false;
+    }
+    post_ui_zone_name(label_copy);
+    post_ui_message("Loading zone...");
+    return true;
+}
+
 // Config fetch and apply implementation
 
 // Data passed to UI thread for config application
@@ -1244,10 +1445,7 @@ static void apply_config_on_ui_thread(void *arg) {
 
     platform_display_set_rotation(data->rotation);
 
-#ifdef ESP_PLATFORM
-    display_update_timeouts(&data->cfg, data->is_charging);
-    display_update_power_settings(&data->cfg);
-#endif
+    platform_display_apply_config(&data->cfg, data->is_charging);
 
     LOGI("Config applied on UI thread: rotation=%d", data->rotation);
     free(data);
@@ -1272,7 +1470,9 @@ static void apply_knob_config(const rk_cfg_t *cfg) {
         data->rotation = rotation;
         data->is_charging = is_charging;
         data->cfg = *cfg;
-        platform_task_post_to_ui(apply_config_on_ui_thread, data);
+        if (!platform_task_post_to_ui(apply_config_on_ui_thread, data)) {
+            free(data);
+        }
     }
 }
 
@@ -1523,14 +1723,17 @@ static bool fetch_knob_config(void) {
          cfg->wifi_power_save_enabled, cfg->cpu_freq_scaling_enabled,
          cfg->sleep_poll_stopped_sec);
 
-    // Make a copy for apply and save
+    // Persist while holding the same lock used by local connectivity edits, so
+    // this full controller-config write cannot clobber newer WiFi fields.
+    bool saved = persist_state_config_locked();
     rk_cfg_t cfg_copy = *cfg;
     unlock_state();
 
     cJSON_Delete(root);
 
-    // Save to NVS
-    platform_storage_save(&cfg_copy);
+    if (!saved) {
+        LOGW("Could not persist fetched controller config");
+    }
 
     // Apply the config
     apply_knob_config(&cfg_copy);

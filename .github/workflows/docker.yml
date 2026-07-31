@@ -15,6 +15,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  test-shared:
+    name: test-shared
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Test shared configuration contracts
+        run: |
+          cc -std=c11 -Wall -Wextra -Werror \
+            -Icommon tests/test_rk_cfg.c -o /tmp/test-rk-cfg
+          /tmp/test-rk-cfg
+
   build-idf:
     name: build-idf
     runs-on: ubuntu-latest
@@ -88,10 +102,87 @@ jobs:
             roon_knob_merged.bin
           retention-days: 30
 
+  build-frame:
+    name: build-frame
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Get firmware version
+        id: frame-version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/v}
+          else
+            VERSION=$(grep 'set(PROJECT_VER' idf_app/CMakeLists.txt | sed 's/.*"\(.*\)".*/\1/')
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building HiPhi Frame firmware version: $VERSION"
+
+      - name: Inject version into Frame CMakeLists.txt
+        run: |
+          sed -i 's/set(PROJECT_VER ".*")/set(PROJECT_VER "${{ steps.frame-version.outputs.version }}")/' frame_app/CMakeLists.txt
+          grep PROJECT_VER frame_app/CMakeLists.txt
+
+      - name: Restore Frame compiler cache
+        uses: actions/cache@v5
+        with:
+          path: .ci/ccache-frame
+          key: ${{ runner.os }}-esp-idf-v5.5.5-frame-ccache-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-esp-idf-v5.5.5-frame-ccache-
+
+      - name: Build HiPhi Frame with ESP-IDF
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.5
+          target: esp32s3
+          path: frame_app
+          extra_docker_args: >-
+            -e CCACHE_DIR=/app/${{ github.repository }}/.ci/ccache-frame
+          command: >-
+            set -e;
+            idf.py build;
+            grep -Fx 'CONFIG_COMPILER_OPTIMIZATION_PERF=y' sdkconfig;
+            ! grep -Fx 'CONFIG_COMPILER_OPTIMIZATION_DEBUG=y' sdkconfig;
+            grep -Fx 'CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096' sdkconfig;
+            grep -Fx 'CONFIG_BT_ENABLED=y' sdkconfig;
+            grep -Fx 'CONFIG_BT_NIMBLE_ENABLED=y' sdkconfig;
+            grep -Fx 'CONFIG_BT_NIMBLE_HID_SERVICE=y' sdkconfig;
+            grep -Fx 'CONFIG_ESPTOOLPY_FLASHMODE_QIO=y' sdkconfig;
+            grep -Fx 'CONFIG_ESPTOOLPY_FLASHFREQ_80M=y' sdkconfig
+
+      - name: Create merged HiPhi Frame image
+        run: |
+          pip install esptool
+          # ESP-IDF boots QIO configurations from a DIO image header, then the
+          # second-stage bootloader enables quad mode.
+          esptool --chip esp32s3 merge-bin \
+            -o hiphi_frame_merged.bin \
+            --flash-mode dio --flash-freq 80m --flash-size 16MB \
+            0x0 frame_app/build/bootloader/bootloader.bin \
+            0x8000 frame_app/build/partition_table/partition-table.bin \
+            0xd000 frame_app/build/ota_data_initial.bin \
+            0x10000 frame_app/build/hiphi_frame.bin
+          test "$(od -An -tu1 -j2 -N1 hiphi_frame_merged.bin | tr -d ' ')" = "2"
+          esptool --chip esp32s3 image-info hiphi_frame_merged.bin
+          ls -la frame_app/build/hiphi_frame.bin hiphi_frame_merged.bin
+
+      - name: Upload HiPhi Frame artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: hiphi-frame-firmware
+          path: |
+            frame_app/build/hiphi_frame.bin
+            hiphi_frame_merged.bin
+          retention-days: 30
+
   release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: [build-idf]
+    needs: [test-shared, build-idf, build-frame]
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - uses: actions/checkout@v6
@@ -103,6 +194,12 @@ jobs:
         with:
           name: esp32s3-firmware
           path: esp32s3-artifacts
+
+      - name: Download HiPhi Frame firmware
+        uses: actions/download-artifact@v7
+        with:
+          name: hiphi-frame-firmware
+          path: frame-artifacts
 
       - name: Get version from tag
         id: version
@@ -149,6 +246,8 @@ jobs:
           mkdir -p release-assets
           cp esp32s3-artifacts/idf_app/build/roon_knob.bin release-assets/
           cp esp32s3-artifacts/roon_knob_merged.bin release-assets/
+          cp frame-artifacts/frame_app/build/hiphi_frame.bin release-assets/
+          cp frame-artifacts/hiphi_frame_merged.bin release-assets/
           ls -la release-assets/
 
       - name: Build release body
@@ -181,6 +280,8 @@ jobs:
           files: |
             release-assets/roon_knob.bin
             release-assets/roon_knob_merged.bin
+            release-assets/hiphi_frame.bin
+            release-assets/hiphi_frame_merged.bin
           body_path: final_body.md
 
       - name: Upload assets to existing release
@@ -206,7 +307,7 @@ jobs:
   deploy-pr-preview:
     name: Deploy PR Preview
     runs-on: ubuntu-latest
-    needs: [build-idf]
+    needs: [build-idf, build-frame]
     if: github.event_name == 'pull_request'
     permissions:
       contents: write
@@ -222,20 +323,28 @@ jobs:
           name: esp32s3-firmware
           path: esp32s3-artifacts
 
+      - name: Download HiPhi Frame firmware
+        uses: actions/download-artifact@v7
+        with:
+          name: hiphi-frame-firmware
+          path: frame-artifacts
+
       - name: Prepare PR preview content
         env:
           PR_NUM: ${{ github.event.pull_request.number }}
           BUILD_SHA: ${{ github.sha }}
         run: |
           mkdir -p pr-preview
-          MANIFEST_FILE="manifest-s3-${BUILD_SHA}.json"
+          DIAL_MANIFEST_FILE="manifest-s3-${BUILD_SHA}.json"
+          FRAME_MANIFEST_FILE="manifest-frame-${BUILD_SHA}.json"
           FLASH_PAGE="flash-${BUILD_SHA}.html"
 
           # Copy firmware
           cp esp32s3-artifacts/roon_knob_merged.bin pr-preview/
+          cp frame-artifacts/hiphi_frame_merged.bin pr-preview/
 
           # Immutable preview paths avoid stale GitHub Pages CDN entries.
-          cat > "pr-preview/${MANIFEST_FILE}" << EOF
+          cat > "pr-preview/${DIAL_MANIFEST_FILE}" << EOF
           {
             "name": "Roon Knob (PR #${PR_NUM} Preview)",
             "version": "pr-${PR_NUM}",
@@ -250,10 +359,26 @@ jobs:
           }
           EOF
 
+          cat > "pr-preview/${FRAME_MANIFEST_FILE}" << EOF
+          {
+            "name": "HiPhi Frame (PR #${PR_NUM} Preview)",
+            "version": "pr-${PR_NUM}",
+            "new_install_prompt_erase": true,
+            "builds": [{
+              "chipFamily": "ESP32-S3",
+              "parts": [{
+                "path": "hiphi_frame_merged.bin?sha=${BUILD_SHA}",
+                "offset": 0
+              }]
+            }]
+          }
+          EOF
+
           # Create a page that points at the manifest for this exact build.
           sed \
             -e "s/{{PR_NUMBER}}/${PR_NUM}/g" \
-            -e "s|manifest-s3.json|${MANIFEST_FILE}|g" \
+            -e "s|manifest-s3.json|${DIAL_MANIFEST_FILE}|g" \
+            -e "s|manifest-frame.json|${FRAME_MANIFEST_FILE}|g" \
             web/flash-pr.html > "pr-preview/${FLASH_PAGE}"
 
           echo "PR preview contents:"
@@ -287,9 +412,9 @@ jobs:
               c.user.type === 'Bot' && c.body.includes('Firmware Preview')
             );
 
-            const body = `### Firmware Preview
+            const body = `### Firmware Previews
 
-            Flash this PR's firmware directly in your browser:
+            Flash this PR's Roon Knob or HiPhi Frame firmware directly in your browser:
             **${previewUrl}**
 
             _Updated: ${new Date().toISOString()}_`;
@@ -328,13 +453,21 @@ jobs:
           name: esp32s3-firmware
           path: esp32s3-artifacts
 
+      - name: Download HiPhi Frame firmware
+        uses: actions/download-artifact@v7
+        with:
+          name: hiphi-frame-firmware
+          path: frame-artifacts
+
       - name: Prepare gh-pages content
         run: |
           mkdir -p gh-pages-build
           cp web/index.html gh-pages-build/
           cp web/flash.html gh-pages-build/
           cp web/manifest-s3.json gh-pages-build/
+          cp web/manifest-frame.json gh-pages-build/
           cp esp32s3-artifacts/roon_knob_merged.bin gh-pages-build/
+          cp frame-artifacts/hiphi_frame_merged.bin gh-pages-build/
           echo "roon-knob.muness.com" > gh-pages-build/CNAME
           ls -la gh-pages-build/
 

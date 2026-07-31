@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdbool.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -26,6 +28,11 @@ void controller_input_set_rotation_handler(controller_input_rotation_handler_t h
 
 void controller_input_dispatch_action(controller_input_action_t action);
 void controller_input_dispatch_rotation(int ticks);
+
+// Queue an action for dispatch on the target's UI/event loop. Input callbacks
+// from BLE, timers, and other subsystem tasks must use this form when handling
+// the action can perform network I/O or mutate presentation state.
+bool controller_input_post_action(controller_input_action_t action);
 
 #ifdef __cplusplus
 }

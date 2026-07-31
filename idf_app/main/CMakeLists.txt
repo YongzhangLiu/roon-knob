@@ -1,6 +1,5 @@
 set(SRC_FILES
     "main_idf.c"
-    "wifi_manager.c"
     "captive_portal.c"
     "config_server.c"
     "dns_server.c"
@@ -12,6 +11,7 @@ set(SRC_FILES
     "platform_mdns_idf.c"
     "platform_log_idf.c"
     "platform_input_idf.c"
+    "platform_identity_idf.c"
     "battery.c"
     "ota_update.c"
     "controller_presentation_dial.c"
@@ -28,6 +28,7 @@ set(SRC_FILES
     "../../common/app_main.c"
     "../../common/bridge_client.c"
     "../../common/controller_input.c"
+    "../../common/wifi_manager.c"
     "../../common/ui.c"
     "../../common/ui_jpeg.c"
     "../../common/platform/platform_log.c"

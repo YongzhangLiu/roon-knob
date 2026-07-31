@@ -36,6 +36,10 @@ static const char *HTML_FORM =
     ".hint{font-size:12px;color:#666;margin-top:4px;}"
     ".note{background:#1e3a5f;padding:15px;border-radius:10px;max-width:300px;margin-top:20px;font-size:13px;}"
     ".note a{color:#4fc3f7;}"
+    ".saved{background:#16213e;padding:12px 20px;border-radius:10px;max-width:300px;margin-top:20px;}"
+    ".wifi-entry{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #333;}"
+    ".wifi-entry:last-child{border-bottom:0;}"
+    ".btn-rm{background:#c62828;color:#fff;border:0;border-radius:5px;padding:7px 10px;cursor:pointer;}"
     "</style></head><body>"
     "<h1>Roon Knob</h1>"
     "<p>WiFi Setup</p>"
@@ -101,7 +105,13 @@ static bool get_form_field(const char *data, const char *field, char *out, size_
     char search[64];
     snprintf(search, sizeof(search), "%s=", field);
 
-    const char *start = strstr(data, search);
+    const char *start = data;
+    while ((start = strstr(start, search)) != NULL) {
+        if (start == data || *(start - 1) == '&') {
+            break;
+        }
+        start++;
+    }
     if (!start) {
         return false;
     }
@@ -130,11 +140,106 @@ static bool get_form_field(const char *data, const char *field, char *out, size_
     return true;
 }
 
-// Handler for GET / - serve the config form
+static void html_escape(const char *src, char *dst, size_t dst_len) {
+    size_t j = 0;
+    for (size_t i = 0; src[i] && j < dst_len - 1; i++) {
+        const char *esc = NULL;
+        size_t esc_len = 0;
+        switch (src[i]) {
+        case '&': esc = "&amp;"; esc_len = 5; break;
+        case '<': esc = "&lt;"; esc_len = 4; break;
+        case '>': esc = "&gt;"; esc_len = 4; break;
+        case '"': esc = "&quot;"; esc_len = 6; break;
+        case '\'': esc = "&#39;"; esc_len = 5; break;
+        default: break;
+        }
+        if (esc) {
+            if (j + esc_len >= dst_len) break;
+            memcpy(dst + j, esc, esc_len);
+            j += esc_len;
+        } else {
+            dst[j++] = src[i];
+        }
+    }
+    dst[j] = '\0';
+}
+
+// Handler for GET / - serve the config form and recovery removals.
 static esp_err_t root_get_handler(httpd_req_t *req) {
     ESP_LOGI(TAG, "Serving config form");
+
+    rk_cfg_t cfg = {0};
+    platform_storage_load(&cfg);
+
     httpd_resp_set_type(req, "text/html");
-    httpd_resp_send(req, HTML_FORM, strlen(HTML_FORM));
+    const char *closing = strstr(HTML_FORM, "</body></html>");
+    size_t prefix_len = closing ? (size_t)(closing - HTML_FORM)
+                                : strlen(HTML_FORM);
+    httpd_resp_send_chunk(req, HTML_FORM, prefix_len);
+
+    if (cfg.wifi_count > 0) {
+        httpd_resp_sendstr_chunk(req,
+                                "<div class='saved'><strong>Saved Networks</strong>");
+        for (int i = 0; i < cfg.wifi_count && i < RK_MAX_WIFI; i++) {
+            char escaped[160];
+            char row[384];
+            html_escape(cfg.wifi[i].ssid, escaped, sizeof(escaped));
+            snprintf(row, sizeof(row),
+                     "<div class='wifi-entry'><span>%s</span>"
+                     "<form method='POST' action='/wifi-remove' style='margin:0'>"
+                     "<input type='hidden' name='idx' value='%d'>"
+                     "<button type='submit' class='btn-rm'>Remove</button>"
+                     "</form></div>",
+                     escaped, i);
+            httpd_resp_sendstr_chunk(req, row);
+        }
+        httpd_resp_sendstr_chunk(req, "</div>");
+    }
+
+    httpd_resp_sendstr_chunk(req, closing ? closing : "");
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
+static esp_err_t wifi_remove_handler(httpd_req_t *req) {
+    char buf[64] = {0};
+    int received = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (received <= 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No data received");
+        return ESP_FAIL;
+    }
+    buf[received] = '\0';
+
+    char idx_text[8] = {0};
+    if (!get_form_field(buf, "idx", idx_text, sizeof(idx_text))) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing index");
+        return ESP_FAIL;
+    }
+    char *end = NULL;
+    long parsed = strtol(idx_text, &end, 10);
+    if (end == idx_text || *end != '\0' ||
+        parsed < 0 || parsed >= RK_MAX_WIFI) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid index");
+        return ESP_FAIL;
+    }
+
+    rk_cfg_t cfg = {0};
+    platform_storage_load(&cfg);
+    if (parsed < cfg.wifi_count) {
+        ESP_LOGI(TAG, "Removing WiFi '%s' during setup",
+                 cfg.wifi[parsed].ssid);
+        rk_cfg_remove_wifi(&cfg, (int)parsed);
+        rk_cfg_sync_primary_wifi(&cfg);
+        if (!platform_storage_save(&cfg)) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                                "Failed to save");
+            return ESP_FAIL;
+        }
+    }
+
+    httpd_resp_set_status(req, "303 See Other");
+    httpd_resp_set_hdr(req, "Location", "/");
+    httpd_resp_sendstr(req, "Redirecting...");
     return ESP_OK;
 }
 
@@ -176,25 +281,36 @@ static esp_err_t configure_get_handler(httpd_req_t *req) {
     rk_cfg_t cfg = {0};
     platform_storage_load(&cfg);
 
-    strncpy(cfg.ssid, ssid, sizeof(cfg.ssid) - 1);
-    strncpy(cfg.pass, pass, sizeof(cfg.pass) - 1);
+    int wifi_idx = rk_cfg_add_wifi(&cfg, ssid, pass);
+    if (wifi_idx < 0) {
+        httpd_resp_set_status(req, "409 Conflict");
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_sendstr(req,
+                          "Two networks are already saved; remove one in Settings first");
+        return ESP_FAIL;
+    }
+    // Captive setup is an explicit request to connect to this network now.
+    // Try it first after reboot rather than exhausting stale entries.
+    rk_cfg_promote_wifi(&cfg, wifi_idx);
     // Bridge URL will be discovered via mDNS or configured in Settings
-    cfg.cfg_ver = 1;  // Mark as configured
+    cfg.cfg_ver = RK_CFG_CURRENT_VER;
 
     bool save_ok = platform_storage_save(&cfg);
 
-    // Send HTTP response first (so browser doesn't show error)
-    httpd_resp_set_type(req, "text/html");
-    httpd_resp_send(req, HTML_SUCCESS, strlen(HTML_SUCCESS));
-
     if (!save_ok) {
         ESP_LOGE(TAG, "Failed to save config");
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "Failed to save WiFi credentials");
         // Show error on display
         ui_update("SAVE FAILED!", "Check serial log", false, 0.0f, 0.0f, 100.0f, 1.0f, 0, 0);
         vTaskDelay(pdMS_TO_TICKS(5000));
         // Don't reboot - let user see the error
         return ESP_FAIL;
     }
+
+    // Confirm success only after NVS write and read-back verification.
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_send(req, HTML_SUCCESS, strlen(HTML_SUCCESS));
 
     ESP_LOGI(TAG, "Credentials saved, showing countdown...");
 
@@ -283,6 +399,13 @@ void captive_portal_start(void) {
         .handler = configure_get_handler,
     };
     httpd_register_uri_handler(s_server, &configure);
+
+    httpd_uri_t wifi_remove = {
+        .uri = "/wifi-remove",
+        .method = HTTP_POST,
+        .handler = wifi_remove_handler,
+    };
+    httpd_register_uri_handler(s_server, &wifi_remove);
 
     // iOS captive portal detection endpoints
     httpd_uri_t ios_hotspot = {

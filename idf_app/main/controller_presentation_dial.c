@@ -5,9 +5,11 @@
 #include "controller_presentation.h"
 #include "ui.h"
 
-void controller_presentation_update(const char *line1, const char *line2, bool playing,
-                                     float volume, float volume_min, float volume_max,
-                                     float volume_step, int seek_position, int length) {
+void controller_presentation_update(const char *line1, const char *line2, const char *line3,
+                                     bool playing, float volume, float volume_min,
+                                     float volume_max, float volume_step,
+                                     int seek_position, int length) {
+    (void)line3;
     ui_update(line1, line2, playing, volume, volume_min, volume_max, volume_step, seek_position, length);
 }
 

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Flash Roon Knob Firmware - PR #{{PR_NUMBER}} Preview</title>
+  <title>Flash Firmware - PR #{{PR_NUMBER}} Preview</title>
   <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
   <style>
     :root {
@@ -125,7 +125,7 @@
       </div>
     </div>
 
-    <h1>Flash Roon Knob Firmware</h1>
+    <h1>Flash Firmware</h1>
     <p class="subtitle">Flash firmware directly from your browser - no tools to install</p>
 
     <div class="unsupported" id="unsupported">
@@ -165,9 +165,35 @@
       </div>
     </div>
 
+    <!-- HiPhi Frame -->
+    <div class="card">
+      <h2>HiPhi Frame <span class="chip-badge">ESP32-S3 e-ink</span></h2>
+      <p class="description">
+        The rectangular e-ink now-playing display with physical buttons and BLE media-remote support.
+      </p>
+      <div class="flash-section">
+        <esp-web-install-button manifest="manifest-frame.json">
+          <button slot="activate">Flash HiPhi Frame</button>
+          <span slot="unsupported">Not supported</span>
+          <span slot="not-allowed">HTTPS required</span>
+        </esp-web-install-button>
+        <span class="version-info">PR #{{PR_NUMBER}}</span>
+      </div>
+      <div class="steps">
+        <strong>Steps:</strong>
+        <ol>
+          <li>Connect the Frame to your computer over USB-C</li>
+          <li>Click "Flash HiPhi Frame" and select its serial port</li>
+          <li>Wait for flashing and the first e-ink refresh to complete</li>
+          <li>Connect to <code>hiphi-frame-setup</code> to configure WiFi</li>
+        </ol>
+      </div>
+    </div>
+
     <div class="warning">
       <strong>First time?</strong><br>
-      After flashing, the device creates a WiFi access point called <code>roon-knob-setup</code>. Connect to it to configure your WiFi credentials.
+      Roon Knob creates <code>roon-knob-setup</code>; HiPhi Frame creates
+      <code>hiphi-frame-setup</code>. Connect to the matching network to configure WiFi.
     </div>
 
     <div class="requirements">

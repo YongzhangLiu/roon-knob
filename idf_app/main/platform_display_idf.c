@@ -664,6 +664,14 @@ void platform_display_set_rotation(uint16_t degrees) {
     lv_display_set_rotation(s_display, rotation);
 }
 
+void platform_display_apply_config(const rk_cfg_t *cfg, bool is_charging) {
+    if (!cfg) {
+        return;
+    }
+    display_update_timeouts(cfg, is_charging);
+    display_update_power_settings(cfg);
+}
+
 bool platform_battery_is_charging(void) {
     return battery_is_charging();
 }

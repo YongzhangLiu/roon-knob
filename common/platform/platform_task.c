@@ -54,11 +54,11 @@ static bool ui_queue_push(platform_task_fn_t fn, void *arg) {
     return true;
 }
 
-void platform_task_post_to_ui(platform_task_fn_t fn, void *arg) {
+bool platform_task_post_to_ui(platform_task_fn_t fn, void *arg) {
     if (!s_initialized) {
         platform_task_init();
     }
-    ui_queue_push(fn, arg);
+    return ui_queue_push(fn, arg);
 }
 
 void platform_task_run_pending(void) {
