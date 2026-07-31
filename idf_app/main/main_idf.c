@@ -280,7 +280,21 @@ static void ui_loop_task(void *arg) {
             }
         }
 
-        // Process deferred operations (from WiFi event callback)
+        // Port 80 needs an 8 KiB internal HTTP-server stack. Reserve it before
+        // mDNS and BLE consume/fragment the remaining internal heap.
+        if (atomic_exchange_explicit(&s_config_server_stop_pending, false,
+                                     memory_order_acq_rel)) {
+            config_server_stop();
+        }
+        if (atomic_exchange_explicit(&s_config_server_start_pending, false,
+                                     memory_order_acq_rel) &&
+            !wifi_mgr_is_ap_mode()) {
+            log_memory("before config server start");
+            config_server_start();
+            log_memory("after config server start");
+        }
+
+        // Process remaining deferred operations from the WiFi event callback.
         if (s_mdns_init_pending) {
             s_mdns_init_pending = false;
             ESP_LOGI(TAG, "Initializing mDNS (network is up)...");
@@ -300,15 +314,6 @@ static void ui_loop_task(void *arg) {
                 log_memory(s_ble_initialized ? "after BLE host init" :
                                                 "BLE host init rejected");
             }
-        }
-        if (atomic_exchange_explicit(&s_config_server_stop_pending, false,
-                                     memory_order_acq_rel)) {
-            config_server_stop();
-        }
-        if (atomic_exchange_explicit(&s_config_server_start_pending, false,
-                                     memory_order_acq_rel) &&
-            !wifi_mgr_is_ap_mode()) {
-            config_server_start();
         }
 
         // Yield to lower priority tasks including IDLE
