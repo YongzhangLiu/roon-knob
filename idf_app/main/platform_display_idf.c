@@ -51,7 +51,10 @@ static esp_timer_handle_t s_lvgl_tick_timer = NULL;
 #define LCD_HOST SPI2_HOST
 #define LCD_H_RES 360
 #define LCD_V_RES 360
-#define LVGL_BUF_HEIGHT (LCD_V_RES / 10)
+/* Two 36-row DMA buffers consumed 51,840 bytes and left Wi-Fi with no
+ * DMA-capable heap once BLE was connected. Twenty-four rows retains partial,
+ * double-buffered rendering while returning 17,280 bytes to the radio path. */
+#define LVGL_BUF_HEIGHT 24
 #define PIN_NUM_LCD_CS      ((gpio_num_t)14)
 #define PIN_NUM_LCD_PCLK    ((gpio_num_t)13)
 #define PIN_NUM_LCD_DATA0   ((gpio_num_t)15)

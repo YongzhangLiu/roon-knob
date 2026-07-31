@@ -68,6 +68,13 @@ total, free, largest-free, utilization, and fragmentation after UI creation.
 See [ESP32-S3 Memory Architecture](MEMORY.md) for initialization order,
 allocator policy, cache-safety constraints, and adaptive-UI lifecycle rules.
 
+The display uses two 24-row partial-render buffers (34,560 bytes total) in
+DMA-capable internal SRAM. The former 36-row pair consumed 51,840 bytes and,
+with Wi-Fi's static buffers and an active BLE controller, produced a measured
+`DMA free=19 largest=0` followed by repeated `wifi:m f null` warnings and HTTP
+timeouts. The smaller stripes preserve double buffering while reclaiming
+17,280 bytes for radio traffic.
+
 #### Contiguous-block rule
 
 `heap_caps_get_free_size(MALLOC_CAP_INTERNAL)` is not sufficient evidence that

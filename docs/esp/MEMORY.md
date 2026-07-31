@@ -54,6 +54,14 @@ objects a fragmentation risk. Code that owns PSRAM-safe data should request
 threshold and changing allocation behavior for Wi-Fi, TLS, drivers, and other
 components.
 
+Dial additionally reserves 48 KiB of internal heap for allocations that
+explicitly require internal or DMA-capable memory and places ESP-IDF's eligible
+Wi-Fi/lwIP static BSS in PSRAM. Its two LVGL draw stripes remain DMA-capable and
+double-buffered, but use 24 rows each (34,560 bytes total) instead of 36 rows
+each (51,840 bytes). This returns 17,280 bytes to the shared display/radio DMA
+budget. Frame has no LVGL draw buffers and retains the default 32 KiB internal
+reserve.
+
 ESP-IDF allocations made with `heap_caps_malloc()` can be released with
 `free()`. Do not add an internal-RAM fallback for a large optional cache merely
 to make allocation succeed: failing closed or reducing the cache is safer than
