@@ -276,7 +276,9 @@ jobs:
             grep -Fx "CONFIG_BT_NIMBLE_ENABLED=y" sdkconfig;
             grep -Fx "CONFIG_BT_NIMBLE_NVS_PERSIST=y" sdkconfig;
             grep -Fx "CONFIG_BT_NIMBLE_SM_SC=y" sdkconfig;
-            grep -Fx "CONFIG_BT_NIMBLE_HID_SERVICE=y" sdkconfig
+            grep -Fx "CONFIG_BT_NIMBLE_HID_SERVICE=y" sdkconfig;
+            cp build/hiphi_dial.bin build/roon_knob.bin;
+            cmp build/hiphi_dial.bin build/roon_knob.bin
 
       - name: Create merged flash image for web flashing
         run: |
@@ -291,7 +293,6 @@ jobs:
 
           # Compatibility aliases remain byte-identical while bridge/release
           # consumers migrate to the HiPhi Dial artifact names.
-          cp idf_app/build/hiphi_dial.bin idf_app/build/roon_knob.bin
           cp hiphi_dial_merged.bin roon_knob_merged.bin
           cmp idf_app/build/hiphi_dial.bin idf_app/build/roon_knob.bin
           cmp hiphi_dial_merged.bin roon_knob_merged.bin
