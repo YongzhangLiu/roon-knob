@@ -812,6 +812,10 @@ static esp_err_t sta_ble_handler(httpd_req_t *req) {
     return ESP_FAIL;
   }
   bool scanning = status.state == RK_BLE_HID_HOST_STATE_SCANNING;
+  bool auto_updates = scanning ||
+      status.state == RK_BLE_HID_HOST_STATE_STARTING ||
+      status.state == RK_BLE_HID_HOST_STATE_CONNECTING ||
+      status.state == RK_BLE_HID_HOST_STATE_STOPPING;
   const char *dev_name =
       status.active_name[0] ? status.active_name : status.bonded_name;
 
@@ -841,7 +845,7 @@ static esp_err_t sta_ble_handler(httpd_req_t *req) {
     "<!DOCTYPE html><html><head>"
     "<meta name='viewport' content='width=device-width,initial-scale=1'>"
     "<title>hiphi frame - BLE Remote</title>"
-    "<style>%s</style>%s</head><body>"
+    "<style>%s</style>%s%s</head><body>"
     "<h1>hiphi frame</h1>"
     "<nav><a href='/zones'>Zones</a><a href='/ble'>BLE Remote</a>"
     "%s%s%s"
@@ -849,6 +853,10 @@ static esp_err_t sta_ble_handler(httpd_req_t *req) {
     "<div class='card'><h2>BLE Media Remote</h2>",
     STA_CSS,
     FAVICON_LINK,
+    auto_updates
+      ? "<script>setTimeout(function(){if(!document.hidden)location.reload()},2000);"
+        "document.addEventListener('visibilitychange',function(){if(!document.hidden)location.reload()});</script>"
+      : "",
     esc_bridge_url[0] ? "<a href='" : "",
     esc_bridge_url[0] ? esc_bridge_url : "",
     esc_bridge_url[0] ? "' target='_blank'>Unified Hi-Fi Control</a>" : "");
@@ -888,9 +896,9 @@ static esp_err_t sta_ble_handler(httpd_req_t *req) {
     html_escape(dev_name, esc_name, sizeof(esc_name));
     pos += snprintf(html + pos, html_size - pos,
       "<div class='device'>"
-      "<span>Connected: <strong>%s</strong></span>"
+      "<span><strong>Connected</strong><br>%s</span>"
       "<form method='POST' action='/api/ble-unpair'>"
-      "<button type='submit' class='btn btn-danger'>Forget</button>"
+      "<button type='submit' class='btn btn-danger'>Forget remote</button>"
       "</form></div>",
       esc_name);
     if (pos >= (int)html_size) pos = (int)html_size - 1;
@@ -898,9 +906,9 @@ static esp_err_t sta_ble_handler(httpd_req_t *req) {
     char esc_name[128];
     html_escape(dev_name, esc_name, sizeof(esc_name));
     pos += snprintf(html + pos, html_size - pos,
-      "<p class='status'>Paired with <strong>%s</strong> (disconnected, reconnecting...)</p>"
+      "<p class='status'><strong>Reconnecting</strong><br>%s is paired and will reconnect automatically.</p>"
       "<form method='POST' action='/api/ble-unpair'>"
-      "<button type='submit' class='btn btn-danger'>Forget</button>"
+      "<button type='submit' class='btn btn-danger'>Forget remote</button>"
       "</form>",
       esc_name);
     if (pos >= (int)html_size) pos = (int)html_size - 1;
@@ -910,46 +918,48 @@ static esp_err_t sta_ble_handler(httpd_req_t *req) {
     if (pos >= (int)html_size) pos = (int)html_size - 1;
   }
 
-  // Scan
-  pos += snprintf(html + pos, html_size - pos,
-    "<h2>Find Remotes</h2>");
-  if (pos >= (int)html_size) pos = (int)html_size - 1;
-
-  if (scanning) {
+  if (status.bonded) {
     pos += snprintf(html + pos, html_size - pos,
-      "<p class='status'>Scanning... <a href='/ble'>Refresh</a></p>");
+      "<p class='status'>To pair a different remote, forget this one first.</p>");
     if (pos >= (int)html_size) pos = (int)html_size - 1;
   } else {
     pos += snprintf(html + pos, html_size - pos,
+      "<h2>Pair a remote</h2>"
+      "<p class='status'>Put the remote into pairing mode, then start a scan.</p>"
       "<form method='POST' action='/api/ble-scan'>"
-      "<button type='submit' class='btn'>Scan for Remotes</button>"
-      "</form>");
+      "<button type='submit' class='btn'%s>%s</button>"
+      "</form>",
+      scanning ? " disabled" : "",
+      scanning ? "Scanning..." : "Scan for remotes");
     if (pos >= (int)html_size) pos = (int)html_size - 1;
-  }
 
-  // Results
-  if (result_count > 0 && !scanning) {
-    pos += snprintf(html + pos, html_size - pos, "<h2>Discovered Devices</h2>");
-    if (pos >= (int)html_size) pos = (int)html_size - 1;
-    for (size_t i = 0; i < result_count; i++) {
-      char esc_name[128];
-      html_escape(results[i].name, esc_name, sizeof(esc_name));
+    if (!scanning && result_count > 0) {
+      pos += snprintf(html + pos, html_size - pos, "<h2>Discovered remotes</h2>");
+      if (pos >= (int)html_size) pos = (int)html_size - 1;
+      for (size_t i = 0; i < result_count; i++) {
+        char esc_name[128];
+        html_escape(results[i].name, esc_name, sizeof(esc_name));
+        pos += snprintf(html + pos, html_size - pos,
+          "<div class='device'>"
+          "<span>%s</span>"
+          "<form method='POST' action='/api/ble-pair'>"
+          "<input type='hidden' name='idx' value='%u'>"
+          "<input type='hidden' name='generation' value='%lu'>"
+          "<button type='submit' class='btn'>Pair this remote</button>"
+          "</form></div>",
+          esc_name, (unsigned)i, (unsigned long)scan_generation);
+        if (pos >= (int)html_size) pos = (int)html_size - 1;
+      }
+    } else if (!scanning && scan_generation > 0) {
       pos += snprintf(html + pos, html_size - pos,
-        "<div class='device'>"
-        "<span>%s</span>"
-        "<form method='POST' action='/api/ble-pair'>"
-        "<input type='hidden' name='idx' value='%u'>"
-        "<input type='hidden' name='generation' value='%lu'>"
-        "<button type='submit' class='btn'>Pair</button>"
-        "</form></div>",
-        esc_name, (unsigned)i, (unsigned long)scan_generation);
+        "<p class='status'>No remotes found. Keep the remote in pairing mode and scan again.</p>");
       if (pos >= (int)html_size) pos = (int)html_size - 1;
     }
   }
 
   pos += snprintf(html + pos, html_size - pos,
     "<p class='status' style='margin-top:20px;font-size:12px;'>"
-    "Put your BLE remote into pairing mode before scanning.</p>"
+    "The Frame connects to a separate physical Bluetooth media remote.</p>"
     "</div>"
     "<div class='card' style='margin-top:20px;'>"
     "<form method='POST' action='/api/restart'>"

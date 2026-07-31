@@ -143,6 +143,7 @@ typedef struct {
     uint32_t operation_generation;
     uint32_t opening_generation;
     uint8_t opening_addr_type;
+    char opening_name[RK_BLE_HID_HOST_NAME_MAX_LEN];
     volatile uint32_t callback_scan_generation;
     TickType_t scan_deadline;
     TickType_t stop_deadline;
@@ -191,6 +192,13 @@ static void copy_name(char destination[RK_BLE_HID_HOST_NAME_MAX_LEN], const char
         strnlen(source, RK_BLE_HID_HOST_NAME_MAX_LEN - 1);
     memcpy(destination, source, length);
     destination[length] = '\0';
+}
+
+static void format_bda_name(char destination[RK_BLE_HID_HOST_NAME_MAX_LEN],
+                            const uint8_t bda[6]) {
+    snprintf(destination, RK_BLE_HID_HOST_NAME_MAX_LEN,
+             "%02X:%02X:%02X:%02X:%02X:%02X", bda[0], bda[1], bda[2],
+             bda[3], bda[4], bda[5]);
 }
 
 static bool is_stopping(void) {
@@ -859,6 +867,7 @@ static void connect_device(const rk_ble_hid_host_device_t *device) {
     ++s.operation_generation;
     s.opening_generation = s.operation_generation;
     s.opening_addr_type = device->addr_type;
+    copy_name(s.opening_name, device->name);
     set_state(RK_BLE_HID_HOST_STATE_CONNECTING, RK_BLE_HID_HOST_ERROR_NONE);
     connect_job_t *job = calloc(1, sizeof(*job));
     if (!job) {
@@ -1073,7 +1082,15 @@ static void process_event(const service_event_t *event) {
         memcpy(s.active_bda, event->data.open.bda, sizeof(s.active_bda));
         s.have_active_bda = true;
         s.reconnect_attempts = 0;
-        status_set_connection(true, event->data.open.name);
+        char resolved_name[RK_BLE_HID_HOST_NAME_MAX_LEN];
+        if (event->data.open.name[0]) {
+            copy_name(resolved_name, event->data.open.name);
+        } else if (s.opening_name[0]) {
+            copy_name(resolved_name, s.opening_name);
+        } else {
+            format_bda_name(resolved_name, event->data.open.bda);
+        }
+        status_set_connection(true, resolved_name);
         char active_name[RK_BLE_HID_HOST_NAME_MAX_LEN];
         xSemaphoreTake(s.status_lock, portMAX_DELAY);
         copy_name(active_name, s.status.active_name);

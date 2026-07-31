@@ -526,19 +526,11 @@ static esp_err_t redirect_to_ble(httpd_req_t *req) {
     return ESP_OK;
 }
 
-static const char *ble_state_text(rk_ble_hid_host_state_t state) {
-    switch (state) {
-        case RK_BLE_HID_HOST_STATE_UNAVAILABLE: return "Unavailable";
-        case RK_BLE_HID_HOST_STATE_DISABLED: return "Disabled";
-        case RK_BLE_HID_HOST_STATE_STARTING: return "Starting";
-        case RK_BLE_HID_HOST_STATE_READY: return "Ready";
-        case RK_BLE_HID_HOST_STATE_SCANNING: return "Scanning";
-        case RK_BLE_HID_HOST_STATE_CONNECTING: return "Connecting";
-        case RK_BLE_HID_HOST_STATE_CONNECTED: return "Connected";
-        case RK_BLE_HID_HOST_STATE_STOPPING: return "Stopping";
-        case RK_BLE_HID_HOST_STATE_ERROR: return "Error";
-        default: return "Unknown";
-    }
+static bool ble_state_auto_updates(rk_ble_hid_host_state_t state) {
+    return state == RK_BLE_HID_HOST_STATE_STARTING ||
+           state == RK_BLE_HID_HOST_STATE_SCANNING ||
+           state == RK_BLE_HID_HOST_STATE_CONNECTING ||
+           state == RK_BLE_HID_HOST_STATE_STOPPING;
 }
 
 static esp_err_t ble_get_handler(httpd_req_t *req) {
@@ -569,36 +561,86 @@ static esp_err_t ble_get_handler(httpd_req_t *req) {
     char escaped_name[RK_BLE_HID_HOST_NAME_MAX_LEN * 2] = "";
     html_escape(device_name, escaped_name, sizeof(escaped_name));
 
+    const char *state_class = "idle";
+    const char *state_title = "Ready to pair";
+    const char *state_detail = "No remote is paired yet.";
+    if (!status.enabled || status.state == RK_BLE_HID_HOST_STATE_DISABLED) {
+        state_title = "BLE is off";
+        state_detail = "Turn it on when you want to connect a media remote.";
+    } else if (status.state == RK_BLE_HID_HOST_STATE_ERROR) {
+        state_class = "error";
+        state_title = "Bluetooth needs attention";
+        state_detail = "Restart the Dial, then try again.";
+    } else if (status.connected) {
+        state_class = "connected";
+        state_title = "Connected";
+        state_detail = escaped_name[0] ? escaped_name : "Paired media remote";
+    } else if (status.state == RK_BLE_HID_HOST_STATE_CONNECTING ||
+               status.bonded) {
+        state_class = "working";
+        state_title = "Reconnecting";
+        state_detail = escaped_name[0] ? escaped_name : "Paired media remote";
+    } else if (status.state == RK_BLE_HID_HOST_STATE_SCANNING) {
+        state_class = "working";
+        state_title = "Looking for remotes";
+        state_detail = "Keep your remote in pairing mode. This takes about five seconds.";
+    } else if (status.state == RK_BLE_HID_HOST_STATE_STARTING) {
+        state_class = "working";
+        state_title = "Starting Bluetooth";
+        state_detail = "The remote service will be ready shortly.";
+    } else if (status.state == RK_BLE_HID_HOST_STATE_STOPPING) {
+        state_class = "working";
+        state_title = "Turning off Bluetooth";
+        state_detail = "The remote service is shutting down.";
+    }
+    const bool auto_updates = ble_state_auto_updates(status.state);
+
     int pos = snprintf(
         html, html_size,
         "<!DOCTYPE html><html><head>"
         "<meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-        "<title>HiPhi Dial - BLE Media Remote</title>"
+        "<title>BLE Media Remote - HiPhi Dial</title>"
         "<style>"
-        "body{font-family:sans-serif;margin:20px;background:#1a1a2e;color:#eee;}"
-        "h1{color:#4fc3f7}.card{background:#16213e;padding:20px;border-radius:10px;max-width:440px;}"
-        "a{color:#4fc3f7}.status{background:#0f0f1a;padding:10px;border-radius:5px;}"
-        ".device{background:#0f0f1a;padding:10px;border-radius:5px;margin:8px 0;display:flex;justify-content:space-between;align-items:center;}"
-        "button{padding:10px 16px;background:#4fc3f7;color:#000;border:0;border-radius:5px;font-weight:bold;cursor:pointer;}"
-        ".danger{background:#ff7043}form{display:inline;margin:0}</style>"
-        "</head><body><h1>HiPhi Dial</h1>"
-        "<p><a href='/'>Back to settings</a></p>"
-        "<div class='card'><h2>BLE Media Remote</h2>"
-        "<p class='status'>State: <strong>%s</strong>%s%s%s%s</p>"
+        "*{box-sizing:border-box}body{font-family:sans-serif;margin:0;padding:24px;"
+        "background:#1a1a2e;color:#eee;line-height:1.45}main{max-width:480px;margin:0 auto}"
+        "a{color:#70d6ff}h1{color:#4fc3f7;margin:24px 0 6px;font-size:28px}"
+        "h2{font-size:18px;margin:28px 0 8px}.lede{color:#b9c3d8;margin:0 0 20px}"
+        ".connection{display:flex;gap:12px;align-items:flex-start;background:#0f0f1a;"
+        "padding:16px;border-radius:14px;margin:18px 0}.connection strong,.connection span{display:block}"
+        ".connection span:last-child{color:#b9c3d8;margin-top:2px;overflow-wrap:anywhere}"
+        ".dot{width:10px;height:10px;border-radius:50%%;background:#8a94a8;margin-top:6px;flex:none}"
+        ".connected .dot{background:#55d98b}.working .dot{background:#ffd166;animation:pulse 1.4s ease-in-out infinite}"
+        ".error .dot{background:#ff7043}.live{font-size:12px;color:#91a0bb;margin-top:8px}"
+        ".actions{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0}.actions form{margin:0}"
+        "button{padding:10px 16px;background:#4fc3f7;color:#07111a;border:0;border-radius:8px;"
+        "font-weight:700;cursor:pointer}button:hover{background:#70d6ff}button:focus-visible,a:focus-visible{outline:3px solid #fff;outline-offset:3px}"
+        "button:disabled{background:#596275;color:#c7ccda;cursor:wait}.danger{background:#ff8a65}"
+        ".device{background:#0f0f1a;padding:12px 14px;border-radius:12px;margin:8px 0;"
+        "display:flex;gap:12px;justify-content:space-between;align-items:center}.device span{overflow-wrap:anywhere}"
+        ".empty,.hint{color:#b9c3d8}.technical{margin-top:28px;color:#91a0bb;font-size:13px}"
+        ".technical summary{cursor:pointer;color:#b9c3d8}@keyframes pulse{50%%{opacity:.35;transform:scale(.75)}}"
+        "@media(prefers-reduced-motion:reduce){.working .dot{animation:none}}"
+        "</style>%s</head><body><main>"
+        "<a href='/'>← Back to Dial settings</a>"
+        "<h1>BLE Media Remote</h1>"
+        "<p class='lede'>Connect one physical Bluetooth remote to control media on this Dial.</p>"
+        "<div class='connection %s' role='status' aria-live='polite'>"
+        "<span class='dot' aria-hidden='true'></span><div><strong>%s</strong><span>%s</span>"
+        "%s</div></div>"
+        "<div class='actions'>"
         "<form method='POST' action='/ble-enable'>"
         "<input type='hidden' name='enabled' value='%d'>"
         "<button type='submit' class='%s'>%s</button></form>",
-        ble_state_text(status.state),
-        escaped_name[0] ? " — " : "",
-        escaped_name,
-        status.last_error != RK_BLE_HID_HOST_ERROR_NONE ? " — " : "",
-        status.last_error != RK_BLE_HID_HOST_ERROR_NONE
-            ? rk_ble_hid_host_error_name(status.last_error)
+        auto_updates
+            ? "<script>setTimeout(function(){if(!document.hidden)location.reload()},2000);"
+              "document.addEventListener('visibilitychange',function(){if(!document.hidden)location.reload()});</script>"
             : "",
+        state_class, state_title, state_detail,
+        auto_updates ? "<span class='live'>Updates automatically</span>" : "",
         status.enabled ? 0 : 1,
         status.enabled ? "danger" : "",
-        status.enabled ? "Disable" : "Enable");
+        status.enabled ? "Turn off BLE" : "Turn on BLE");
     if (pos < 0 || pos >= (int)html_size) {
         free(html);
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
@@ -613,18 +655,24 @@ static esp_err_t ble_get_handler(httpd_req_t *req) {
                 " <form method='POST' action='/ble-forget'>"
                 "<button type='submit' class='danger'>Forget remote</button></form>");
         }
+        pos += snprintf(html + pos, html_size - (size_t)pos, "</div>");
 
-        pos += snprintf(
-            html + pos, html_size - (size_t)pos,
-            "<h2>Find Remotes</h2>"
-            "<form method='POST' action='/ble-scan'>"
-            "<button type='submit'%s>Scan for Remotes</button></form>",
-            status.state == RK_BLE_HID_HOST_STATE_SCANNING ? " disabled" : "");
-
-        if (status.state == RK_BLE_HID_HOST_STATE_SCANNING) {
-            pos += snprintf(html + pos, html_size - (size_t)pos,
-                            "<p>Scanning… Refresh this page in a few seconds.</p>");
+        if (status.bonded) {
+            pos += snprintf(
+                html + pos, html_size - (size_t)pos,
+                "<p class='hint'>To pair a different remote, forget this one first.</p>");
         } else {
+            pos += snprintf(
+                html + pos, html_size - (size_t)pos,
+                "<h2>Pair a remote</h2>"
+                "<p class='hint'>Put the remote into pairing mode, then start a scan.</p>"
+                "<form method='POST' action='/ble-scan'>"
+                "<button type='submit'%s>%s</button></form>",
+                status.state == RK_BLE_HID_HOST_STATE_SCANNING ? " disabled" : "",
+                status.state == RK_BLE_HID_HOST_STATE_SCANNING
+                    ? "Scanning…" : "Scan for remotes");
+
+            if (status.state != RK_BLE_HID_HOST_STATE_SCANNING) {
             for (size_t i = 0; i < result_count && pos < (int)html_size; i++) {
                 char escaped_result[RK_BLE_HID_HOST_NAME_MAX_LEN * 2];
                 html_escape(results[i].name, escaped_result,
@@ -635,15 +683,21 @@ static esp_err_t ble_get_handler(httpd_req_t *req) {
                     "<form method='POST' action='/ble-pair'>"
                     "<input type='hidden' name='idx' value='%u'>"
                     "<input type='hidden' name='generation' value='%lu'>"
-                    "<button type='submit'>Pair</button></form></div>",
+                    "<button type='submit'>Pair this remote</button></form></div>",
                     escaped_result, (unsigned)i,
                     (unsigned long)scan_generation);
+            }
+                if (result_count == 0 && scan_generation > 0) {
+                    pos += snprintf(
+                        html + pos, html_size - (size_t)pos,
+                        "<p class='empty'>No remotes found. Keep the remote in pairing mode and scan again.</p>");
+                }
             }
         }
     } else {
         pos += snprintf(
             html + pos, html_size - (size_t)pos,
-            "<p>Enable the host before scanning for a physical media remote.</p>");
+            "</div><p class='hint'>BLE stays off across restarts until you turn it on here.</p>");
     }
 
     if (pos < 0 || pos >= (int)html_size) {
@@ -651,9 +705,14 @@ static esp_err_t ble_get_handler(httpd_req_t *req) {
     }
     pos += snprintf(
         html + pos, html_size - (size_t)pos,
-        "<p style='font-size:12px;color:#888'>This is a BLE HID host. "
-        "It pairs with a separate remote; it does not advertise the Dial "
-        "as a remote.</p></div></body></html>");
+        "<details class='technical'><summary>About this setting</summary>"
+        "<p>The Dial connects to a separate Bluetooth media remote. The Dial itself "
+        "does not appear as a remote to phones or computers.</p>%s%s%s</details>"
+        "</main></body></html>",
+        status.last_error != RK_BLE_HID_HOST_ERROR_NONE ? "<p>Technical error: " : "",
+        status.last_error != RK_BLE_HID_HOST_ERROR_NONE
+            ? rk_ble_hid_host_error_name(status.last_error) : "",
+        status.last_error != RK_BLE_HID_HOST_ERROR_NONE ? "</p>" : "");
     if (pos < 0 || pos >= (int)html_size) {
         pos = (int)html_size - 1;
     }
