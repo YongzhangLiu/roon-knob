@@ -555,13 +555,21 @@ static void hidh_event(void *handler_args, esp_event_base_t base, int32_t id, vo
         if (event.data.input.len) {
             memcpy(event.data.input.data, event_data_hidh->input.data, event.data.input.len);
         }
-        ESP_LOGI(TAG, "HID input usage=%s report_id=%u len=%u",
-                 esp_hid_usage_str(event.data.input.usage),
-                 (unsigned)event.data.input.report_id,
-                 (unsigned)event.data.input.len);
-        if (event.data.input.len) {
-            ESP_LOG_BUFFER_HEX_LEVEL(TAG, event.data.input.data,
-                                     event.data.input.len, ESP_LOG_INFO);
+        const bool is_release = event.data.input.len >= 2 &&
+                                event.data.input.data[0] == 0 &&
+                                event.data.input.data[1] == 0;
+        if (is_release) {
+            ESP_LOGD(TAG, "HID media key release report_id=%u",
+                     (unsigned)event.data.input.report_id);
+        } else {
+            ESP_LOGI(TAG, "HID input usage=%s report_id=%u len=%u",
+                     esp_hid_usage_str(event.data.input.usage),
+                     (unsigned)event.data.input.report_id,
+                     (unsigned)event.data.input.len);
+            if (event.data.input.len) {
+                ESP_LOG_BUFFER_HEX_LEVEL(TAG, event.data.input.data,
+                                         event.data.input.len, ESP_LOG_INFO);
+            }
         }
         enqueue_event(&event);
         break;
@@ -1226,6 +1234,10 @@ static void process_event(const service_event_t *event) {
                          key, s.status.connected, is_stopping(),
                          s.config.on_media_key != NULL);
             }
+        } else if (event->data.input.len >= 2 &&
+                   event->data.input.data[0] == 0 &&
+                   event->data.input.data[1] == 0) {
+            ESP_LOGD(TAG, "HID media key released");
         } else if (event->data.input.usage != ESP_HID_USAGE_CCONTROL) {
             ESP_LOGI(TAG,
                      "HID input ignored: unrecognized payload with usage=%s",

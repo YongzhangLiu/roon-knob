@@ -120,7 +120,7 @@
 
     <!-- HiPhi Dial -->
     <div class="card" id="dial-card">
-      <h2>HiPhi Dial <span class="chip-badge">ESP32-S3</span></h2>
+      <h2>HiPhi Dial <span class="chip-badge">Beta</span> <span class="chip-badge">ESP32-S3</span></h2>
       <p class="description">
         The round touchscreen controller with rotary input, WiFi playback
         control, and optional BLE media-remote support.
@@ -149,13 +149,14 @@
 
     <!-- HiPhi Frame -->
     <div class="card" id="frame-card">
-      <h2>HiPhi Frame <span class="chip-badge">ESP32-S3 e-ink</span></h2>
+      <h2>HiPhi Frame <span class="chip-badge">Alpha</span> <span class="chip-badge">ESP32-S3 e-ink</span></h2>
       <p class="description">
         The rectangular e-ink now-playing display with physical buttons and BLE media-remote support.
       </p>
+      <p class="warning"><strong>Alpha firmware:</strong> Frame has not completed the same current hardware regression coverage as Dial. Install for early testing and expect rough edges.</p>
       <div class="flash-section">
         <esp-web-install-button manifest="/manifest-frame.json">
-          <button slot="activate">Update HiPhi Frame</button>
+          <button slot="activate">Update HiPhi Frame Alpha</button>
           <span slot="unsupported">Not supported</span>
           <span slot="not-allowed">HTTPS required</span>
         </esp-web-install-button>

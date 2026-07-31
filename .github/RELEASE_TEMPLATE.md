@@ -1,6 +1,14 @@
 
 ---
 
+## Firmware maturity
+
+- **HiPhi Dial — Beta:** physically exercised on current hardware, including
+  display, Wi-Fi, artwork, settings persistence, and BLE media-remote control.
+- **HiPhi Frame — Alpha:** packaged for early hardware testing. The current
+  shared-stack build has not completed equivalent Frame regression coverage;
+  expect rough edges and report target-specific failures.
+
 ## Updating
 
 **OTA (existing users):** Update the control service, restart, knob updates automatically.

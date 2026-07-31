@@ -736,7 +736,7 @@ jobs:
           # Immutable preview paths avoid stale GitHub Pages CDN entries.
           cat > "pr-preview/${DIAL_MANIFEST_FILE}" << EOF
           {
-            "name": "HiPhi Dial (PR #${PR_NUM} Preview)",
+            "name": "HiPhi Dial Beta (PR #${PR_NUM} Preview)",
             "version": "pr-${PR_NUM}",
             "new_install_prompt_erase": true,
             "builds": [{
@@ -918,7 +918,8 @@ jobs:
             **Built:** ${builtAt}<br>
             **Run:** [#${process.env.PREVIEW_RUN_ID}](${process.env.PREVIEW_RUN_URL}) (attempt ${process.env.PREVIEW_RUN_ATTEMPT})<br>
             **PR head:** [\`${headShaShort}\`](${commitUrl})<br>
-            **Commit:** ${process.env.PREVIEW_COMMIT_SUBJECT}
+            **Commit:** ${process.env.PREVIEW_COMMIT_SUBJECT}<br>
+            **Maturity:** HiPhi Dial **Beta**; HiPhi Frame **Alpha**
 
             - [Flash HiPhi Dial](${dialUrl})
 

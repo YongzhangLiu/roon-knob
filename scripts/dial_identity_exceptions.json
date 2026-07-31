@@ -179,7 +179,7 @@
     },
     {
       "path": "web/manifest-s3.json",
-      "contains": "\"name\": \"HiPhi Dial\""
+      "contains": "\"name\": \"HiPhi Dial (Beta)\""
     },
     {
       "path": "web/manifest-s3.json",
