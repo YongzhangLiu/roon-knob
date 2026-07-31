@@ -196,6 +196,12 @@ shrinking the measured 16 KiB UI stack. Hardware acceptance requires the new
 pre-NimBLE checkpoint and a successful controller start; a green build alone
 does not establish either.
 
+The first split-pool artifacts never reached that checkpoint:
+`lv_mem_add_pool()` rejected the 64 KiB external pool because LVGL's compiled
+`LV_MEM_POOL_EXPAND_SIZE` was still zero. An explicitly aligned allocation
+failed identically, ruling out alignment. The effective build must therefore
+assert both the 32 KiB base and 64 KiB expansion Kconfig values.
+
 ## Coexistence verification
 
 ESP32-S3 shares its 2.4 GHz radio between Wi-Fi and BLE. A successful compile

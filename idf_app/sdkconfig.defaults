@@ -71,6 +71,9 @@ CONFIG_LV_DRAW_TRANSFORM_USE_MATRIX=y
 # Keep a small latency-sensitive LVGL base heap in internal SRAM. app_main adds
 # a 64 KiB PSRAM expansion pool before creating display/UI objects.
 CONFIG_LV_MEM_SIZE_KILOBYTES=32
+# LVGL compiles its TLSF maximum pool size from the base plus this expansion
+# budget. Without it, lv_mem_add_pool() rejects the 64 KiB PSRAM pool.
+CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES=64
 
 # LVGL Fonts - built-in Montserrat for fallback only
 # Main fonts are pre-rendered bitmap fonts (Charis SIL + Material Symbols)

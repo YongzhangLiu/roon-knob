@@ -70,16 +70,21 @@ Dial now uses two LVGL TLSF pools:
 | Pool | Size | Creation | Purpose |
 | --- | ---: | --- | --- |
 | Built-in internal pool | 32 KiB | `CONFIG_LV_MEM_SIZE_KILOBYTES=32` | Fast base capacity and an internal fallback for LVGL objects |
-| PSRAM expansion pool | 64 KiB | 16-byte-aligned `heap_caps_aligned_alloc()` followed by `lv_mem_add_pool()` | Additional widget/object capacity without a fixed internal reservation |
+| PSRAM expansion pool | 64 KiB | `CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES=64`, then 16-byte-aligned `heap_caps_aligned_alloc()` and `lv_mem_add_pool()` | Additional widget/object capacity without a fixed internal reservation |
 
 The order is important:
 
 1. Initialize display hardware, but do not create LVGL objects.
 2. Call `lv_init()` to create the internal pool.
 3. Allocate an explicitly aligned PSRAM block and register it with
-   `lv_mem_add_pool()`. Do not assume a generic heap allocation satisfies an
-   embedded allocator's pool-alignment contract.
+   `lv_mem_add_pool()`.
 4. Register the display driver, fonts, and application UI.
+
+LVGL's built-in TLSF compiles its maximum accepted pool size from
+`LV_MEM_SIZE + LV_MEM_POOL_EXPAND_SIZE`. Reducing the internal base to 32 KiB
+without setting a 64 KiB expansion budget makes the otherwise valid 64 KiB
+PSRAM pool unconditionally fail registration. Alignment is still made explicit,
+but it was not the cause of the observed rejection.
 
 If the expansion pool cannot be allocated or registered, startup stops with an
 explicit error. Continuing would create a device whose UI capacity depends on
@@ -150,7 +155,7 @@ operation reduces them to once per minute. Test real artwork, configuration,
 adaptive navigation, Wi-Fi recovery, BLE pairing/reconnect, and OTA—not only an
 idle boot.
 
-Two failures established the current policy:
+Three failures established the current policy:
 
 1. A 32 KiB UI stack could not be allocated after display setup because the
    largest internal block was 31,744 bytes, leaving a static initialized panel.
@@ -158,6 +163,11 @@ Two failures established the current policy:
    pre-NimBLE checkpoint from 4,867 bytes free / 1,600 largest to 21,055 free /
    10,240 largest, but the BLE controller still failed. Map analysis then found
    LVGL's fixed 64 KiB internal pool, leading to the split-pool design.
+3. The first two split-pool artifacts returned from `app_main()` before UI or
+   BLE startup because `LV_MEM_POOL_EXPAND_SIZE` remained zero. The second used
+   a verified 16-byte-aligned PSRAM address and still failed, proving alignment
+   was not the cause. LVGL's compiled TLSF pool-size limit must be configured
+   alongside the runtime `lv_mem_add_pool()` call.
 
 A green compile proves configuration and linkage, not runtime coexistence.
 Hardware acceptance requires a live UI, successful BLE controller startup, and
