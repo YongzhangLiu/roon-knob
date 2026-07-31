@@ -26,6 +26,27 @@ jobs:
       - name: Test shared configuration contracts
         run: |
           python3 scripts/check_dial_identity.py
+          python3 scripts/check_controller_dependencies.py
+          python3 scripts/check_controller_dependencies.py --self-test
+          cc -std=c11 -Wall -Wextra -Werror -pthread \
+            -Icommon -Iinclude \
+            tests/test_controller_input.c \
+            common/controller_input.c \
+            common/platform/platform_task.c \
+            -o /tmp/test-controller-input
+          /tmp/test-controller-input
+          cc -std=c11 -Wall -Wextra -Werror \
+            -Icommon -Iinclude \
+            tests/test_controller_presentation_dial.c \
+            idf_app/main/controller_presentation_dial.c \
+            -o /tmp/test-controller-presentation-dial
+          /tmp/test-controller-presentation-dial
+          cc -std=c11 -Wall -Wextra -Werror \
+            -Icommon -Iinclude -Iframe_app/main \
+            tests/test_controller_presentation_frame.c \
+            frame_app/main/controller_presentation_frame.c \
+            -o /tmp/test-controller-presentation-frame
+          /tmp/test-controller-presentation-frame
           cc -std=c11 -Wall -Wextra -Werror \
             -Icommon tests/test_rk_cfg.c -o /tmp/test-rk-cfg
           /tmp/test-rk-cfg
