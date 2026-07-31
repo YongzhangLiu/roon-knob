@@ -33,7 +33,9 @@ Use the [Web Flasher](https://roon-knob.muness.com/flash.html) in Chrome or Edge
 
 > **Prefer command line?** See [Firmware Flashing](docs/usage/FIRMWARE_FLASHING.md) for esptool instructions.
 
-After flashing, future updates happen automatically over WiFi.
+Stable firmware updates are available over Wi-Fi. Beta and Alpha prereleases
+remain opt-in through the [Beta Web Flasher](https://roon-knob.muness.com/beta/flash.html)
+and are never pushed through the stable OTA feed.
 
 ### 2. Run the Control Service
 

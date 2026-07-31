@@ -255,6 +255,16 @@ static void hide_panel_cb(lv_event_t *e) {
     }
 }
 
+static const char *firmware_channel_suffix(const char *version) {
+    if (version && strstr(version, "-beta") != NULL) {
+        return " (Beta)";
+    }
+    if (version && strstr(version, "-alpha") != NULL) {
+        return " (Alpha)";
+    }
+    return "";
+}
+
 static void update_version_label(void) {
     if (!s_widgets.version_label) return;
 
@@ -264,24 +274,29 @@ static void update_version_label(void) {
             lv_label_set_text(s_widgets.version_label, "Checking...");
             break;
         case OTA_STATUS_AVAILABLE:
-            lv_label_set_text_fmt(s_widgets.version_label, "v%s -> v%s",
-                info->current_version, info->available_version);
+            lv_label_set_text_fmt(s_widgets.version_label, "v%s%s -> v%s",
+                info->current_version,
+                firmware_channel_suffix(info->current_version),
+                info->available_version);
             break;
         case OTA_STATUS_DOWNLOADING:
             lv_label_set_text_fmt(s_widgets.version_label, "Updating %d%%",
                 info->progress_percent);
             break;
         case OTA_STATUS_UP_TO_DATE:
-            lv_label_set_text_fmt(s_widgets.version_label, "v%s (latest)",
-                info->current_version);
+            lv_label_set_text_fmt(s_widgets.version_label, "v%s%s (latest)",
+                info->current_version,
+                firmware_channel_suffix(info->current_version));
             break;
         case OTA_STATUS_ERROR:
-            lv_label_set_text_fmt(s_widgets.version_label, "v%s (error)",
-                info->current_version);
+            lv_label_set_text_fmt(s_widgets.version_label, "v%s%s (error)",
+                info->current_version,
+                firmware_channel_suffix(info->current_version));
             break;
         default:
-            lv_label_set_text_fmt(s_widgets.version_label, "v%s",
-                info->current_version);
+            lv_label_set_text_fmt(s_widgets.version_label, "v%s%s",
+                info->current_version,
+                firmware_channel_suffix(info->current_version));
             break;
     }
 }
@@ -343,7 +358,9 @@ static void ensure_panel(void) {
     lv_obj_clear_flag(ver_row, LV_OBJ_FLAG_SCROLLABLE);
     lv_label_set_text(lv_label_create(ver_row), "Version:");
     s_widgets.version_label = lv_label_create(ver_row);
-    lv_label_set_text_fmt(s_widgets.version_label, "v%s", ota_get_current_version());
+    const char *current_version = ota_get_current_version();
+    lv_label_set_text_fmt(s_widgets.version_label, "v%s%s", current_version,
+        firmware_channel_suffix(current_version));
 
     lv_obj_t *ssid_row = lv_obj_create(s_widgets.panel);
     lv_obj_set_size(ssid_row, lv_pct(100), LV_SIZE_CONTENT);

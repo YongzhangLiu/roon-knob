@@ -103,10 +103,12 @@
 </head>
 <body data-target-filter="{{TARGET_FILTER}}">
   <div class="container">
-    <a href="/" class="back-link" id="back-link">&larr; Back</a>
+    <a href="./" class="back-link" id="back-link">&larr; Back</a>
 
     <h1>Flash Firmware</h1>
     <p class="subtitle">Flash firmware directly from your browser - no tools to install</p>
+
+    {{RELEASE_CHANNEL_NOTICE}}
 
     <div class="unsupported" id="unsupported">
       <strong>Browser Not Supported</strong><br>
@@ -126,7 +128,7 @@
         control, and optional BLE media-remote support.
       </p>
       <div class="flash-section">
-        <esp-web-install-button manifest="/manifest-s3.json">
+        <esp-web-install-button manifest="manifest-s3.json">
           <button slot="activate">Update HiPhi Dial</button>
           <span slot="unsupported">Not supported</span>
           <span slot="not-allowed">HTTPS required</span>
@@ -155,7 +157,7 @@
       </p>
       <p class="warning"><strong>Alpha firmware:</strong> Frame has not completed the same current hardware regression coverage as Dial. Install for early testing and expect rough edges.</p>
       <div class="flash-section">
-        <esp-web-install-button manifest="/manifest-frame.json">
+        <esp-web-install-button manifest="manifest-frame.json">
           <button slot="activate">Update HiPhi Frame Alpha</button>
           <span slot="unsupported">Not supported</span>
           <span slot="not-allowed">HTTPS required</span>

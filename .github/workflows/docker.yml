@@ -975,12 +975,23 @@ jobs:
       - name: Prepare gh-pages content
         run: |
           mkdir -p gh-pages-build
-          cp web/index.html gh-pages-build/
-          sed 's/{{TARGET_FILTER}}/all/g' web/flash.html \
+          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
+            CHANNEL_LABEL=" Beta"
+            CHANNEL_NOTICE='<div class="warning"><strong>Pre-release firmware</strong><br>Beta and Alpha builds are opt-in test builds. They are not delivered by automatic OTA updates; return here to install a newer test build.</div>'
+          else
+            CHANNEL_LABEL=""
+            CHANNEL_NOTICE=""
+          fi
+          sed "s|{{RELEASE_CHANNEL_LABEL}}|${CHANNEL_LABEL}|g" web/index.html \
+            > gh-pages-build/index.html
+          sed -e 's/{{TARGET_FILTER}}/all/g' \
+            -e "s|{{RELEASE_CHANNEL_NOTICE}}|${CHANNEL_NOTICE}|g" web/flash.html \
             > gh-pages-build/flash.html
-          sed 's/{{TARGET_FILTER}}/dial/g' web/flash.html \
+          sed -e 's/{{TARGET_FILTER}}/dial/g' \
+            -e "s|{{RELEASE_CHANNEL_NOTICE}}|${CHANNEL_NOTICE}|g" web/flash.html \
             > gh-pages-build/flash-dial.html
-          sed 's/{{TARGET_FILTER}}/frame/g' web/flash.html \
+          sed -e 's/{{TARGET_FILTER}}/frame/g' \
+            -e "s|{{RELEASE_CHANNEL_NOTICE}}|${CHANNEL_NOTICE}|g" web/flash.html \
             > gh-pages-build/flash-frame.html
           cp web/manifest-s3.json gh-pages-build/
           cp web/manifest-frame.json gh-pages-build/
@@ -1012,9 +1023,18 @@ jobs:
           echo "roon-knob.muness.com" > gh-pages-build/CNAME
           ls -la gh-pages-build/
 
-      - name: Deploy to gh-pages
+      - name: Deploy stable firmware to gh-pages root
+        if: ${{ !contains(github.ref_name, '-') }}
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./gh-pages-build
           keep_files: true
+
+      - name: Deploy prerelease firmware to beta channel
+        if: ${{ contains(github.ref_name, '-') }}
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./gh-pages-build
+          destination_dir: beta

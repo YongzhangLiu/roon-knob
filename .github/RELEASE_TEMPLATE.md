@@ -11,7 +11,13 @@
 
 ## Updating
 
-**OTA (existing users):** Update the control service, restart, knob updates automatically.
+**Beta/Alpha prereleases:** Install explicitly from the
+[Beta Web Flasher](https://roon-knob.muness.com/beta/flash.html) or download the
+release assets. Prereleases are not published through automatic OTA and do not
+replace the stable web flasher.
+
+**Stable releases (existing users):** Update the control service and restart it;
+the knob can then update over Wi-Fi.
 
 **Docker Compose:**
 ```yaml
@@ -40,7 +46,8 @@ Then: `docker compose pull && docker compose up -d`
 
 ### Web Flasher (Recommended)
 
-Use the [web flasher](https://roon-knob.muness.com/flash.html) in Chrome/Edge - no tools to install.
+For a prerelease, use the [Beta Web Flasher](https://roon-knob.muness.com/beta/flash.html).
+For a stable release, use the [stable web flasher](https://roon-knob.muness.com/flash.html).
 
 ### Command Line (esptool.py)
 
