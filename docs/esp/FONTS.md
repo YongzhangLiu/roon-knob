@@ -37,8 +37,8 @@ However, TinyTTF proved **unstable on ESP32-S3** due to memory constraints:
 - **Reliable operation** - Eliminates crash-prone TinyTTF code path
 
 This TinyTTF result does not prohibit all LVGL allocations in PSRAM. Dial uses
-pre-rendered bitmap fonts and registers a 64 KiB PSRAM expansion pool for LVGL
-widget/object allocations, backed by a 32 KiB internal base pool. Display DMA
+pre-rendered bitmap fonts and registers a 72 KiB PSRAM expansion pool for LVGL
+widget/object allocations, backed by a 24 KiB internal base pool. Display DMA
 buffers and the UI task stack remain internal; runtime TTF rasterization remains
 disabled.
 

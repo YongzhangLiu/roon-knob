@@ -59,9 +59,9 @@ initialization, and `ui_loop` logs its stack high-water mark. A static screen
 should therefore be investigated as a task/lifecycle or memory problem first,
 not treated as an expected provisioning state.
 
-LVGL uses a split heap on Dial: a 32 KiB built-in pool in internal SRAM plus a
-64 KiB expansion pool registered from PSRAM immediately after `lv_init()`.
-This raises the total LVGL object budget to 96 KiB while returning 32 KiB of
+LVGL uses a split heap on Dial: a 24 KiB built-in pool in internal SRAM plus a
+72 KiB expansion pool registered from PSRAM immediately after `lv_init()`.
+This keeps the total LVGL object budget at 96 KiB while returning 40 KiB of
 contiguous internal SRAM to the Bluetooth controller. The display's DMA draw
 buffers and the UI task stack remain internal. Boot telemetry reports LVGL
 total, free, largest-free, utilization, and fragmentation after UI creation.

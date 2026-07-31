@@ -8,6 +8,7 @@
 #include "os_mutex.h"
 
 #include <esp_err.h>
+#include <esp_heap_caps.h>
 #include <esp_http_server.h>
 #include <esp_log.h>
 #include <esp_system.h>
@@ -412,7 +413,8 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
   }
 
   size_t html_size = 10240;  // Extra room for base64 favicon
-  char *html = malloc(html_size);
+  char *html = heap_caps_malloc(html_size,
+                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   if (!html) {
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, "<h1>hiphi frame</h1><p>Out of memory</p>", HTTPD_RESP_USE_STRLEN);
@@ -697,7 +699,8 @@ static esp_err_t sta_zones_handler(httpd_req_t *req) {
   bridge_client_get_bridge_url(bridge_url, sizeof(bridge_url));
 
   size_t html_size = 16384;  // Extra room for base64 favicon + zone list
-  char *html = malloc(html_size);
+  char *html = heap_caps_malloc(html_size,
+                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   if (!html) {
     httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
     return ESP_FAIL;
@@ -821,7 +824,8 @@ static esp_err_t sta_ble_handler(httpd_req_t *req) {
   bridge_client_get_bridge_url(bridge_url, sizeof(bridge_url));
 
   size_t html_size = 12288;  // Extra room for base64 favicon
-  char *html = malloc(html_size);
+  char *html = heap_caps_malloc(html_size,
+                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   if (!html) {
     httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
     return ESP_FAIL;

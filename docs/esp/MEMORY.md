@@ -41,6 +41,7 @@ Use the required capability, not allocation size alone, to choose memory.
 - JSON parse trees and serialized adaptive-screen payloads;
 - bridge-to-UI media, connectivity, and configuration snapshots;
 - decoded artwork and image workspaces that are not DMA sources;
+- generated configuration, zone-picker, and BLE-management HTML;
 - inactive-screen models and bounded caches; and
 - background task stacks only when the task cannot touch flash/NVS and cannot
   run during cache-disabled operations.
@@ -69,8 +70,8 @@ Dial now uses two LVGL TLSF pools:
 
 | Pool | Size | Creation | Purpose |
 | --- | ---: | --- | --- |
-| Built-in internal pool | 32 KiB | `CONFIG_LV_MEM_SIZE_KILOBYTES=32` | Fast base capacity and an internal fallback for LVGL objects |
-| PSRAM expansion pool | 64 KiB | `CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES=64`, then 16-byte-aligned `heap_caps_aligned_alloc()` and `lv_mem_add_pool()` | Additional widget/object capacity without a fixed internal reservation |
+| Built-in internal pool | 24 KiB | `CONFIG_LV_MEM_SIZE_KILOBYTES=24` | Fast base capacity and an internal fallback for LVGL objects |
+| PSRAM expansion pool | 72 KiB | `CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES=72`, then 16-byte-aligned `heap_caps_aligned_alloc()` and `lv_mem_add_pool()` | Additional widget/object capacity without a fixed internal reservation |
 
 The order is important:
 
@@ -81,8 +82,8 @@ The order is important:
 4. Register the display driver, fonts, and application UI.
 
 LVGL's built-in TLSF compiles its maximum accepted pool size from
-`LV_MEM_SIZE + LV_MEM_POOL_EXPAND_SIZE`. Reducing the internal base to 32 KiB
-without setting a 64 KiB expansion budget makes the otherwise valid 64 KiB
+`LV_MEM_SIZE + LV_MEM_POOL_EXPAND_SIZE`. Reducing the internal base to 24 KiB
+without setting a 72 KiB expansion budget makes the otherwise valid 72 KiB
 PSRAM pool unconditionally fail registration. Alignment is still made explicit,
 but it was not the cause of the observed rejection.
 
@@ -91,11 +92,11 @@ explicit error. Continuing would create a device whose UI capacity depends on
 accidental heap state.
 
 Pool diagnostics log the backing address and size before registration. A boot
-that does not reach `Added 65536-byte LVGL PSRAM expansion pool` has not tested
+that does not reach `Added 73728-byte LVGL PSRAM expansion pool` has not tested
 the split-pool design or BLE coexistence; it has stopped during LVGL setup.
 
 The split changes the LVGL object budget from 64 KiB internal to 96 KiB total
-while reclaiming 32 KiB of fixed internal SRAM. It does **not** move the
+while reclaiming 40 KiB of fixed internal SRAM. It does **not** move the
 display's DMA draw buffers or the UI task stack to PSRAM. LVGL may satisfy an
 individual object allocation from either registered pool, so feature sizing
 must use `lv_mem_monitor()` rather than assuming all widgets are external.

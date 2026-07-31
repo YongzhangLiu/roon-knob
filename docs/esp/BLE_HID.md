@@ -143,7 +143,7 @@ Architecture](MEMORY.md); this section records the BLE-specific budget.
 | UI task | Core 1, 16 KiB internal stack | Keeps rendering and its stack away from radio work. |
 | NimBLE host/service tasks | Core 0, internal stacks | Co-locates BLE with Wi-Fi while retaining cache-safe stacks for bonding/NVS paths. |
 | Bridge network worker | 16 KiB PSRAM stack | Reclaims a contiguous internal block after endpoint persistence was moved to the internal UI task. |
-| LVGL object heap | 32 KiB internal + 64 KiB PSRAM | Reclaims 32 KiB of fixed internal `.bss` while increasing the total UI-object budget. |
+| LVGL object heap | 24 KiB internal + 72 KiB PSRAM | Reclaims 40 KiB of fixed internal `.bss` while retaining a 96 KiB total UI-object budget. |
 | JSON/adaptive UI payloads | Bounded PSRAM bodies, parse trees, and queued views | Keeps both large responses and many small transient allocations out of controller/DMA memory. |
 | Wi-Fi task | Core 0 | Explicit ESP-IDF configuration. |
 
@@ -190,17 +190,17 @@ heap free and a 1,600-byte largest block immediately before
 to PSRAM improved that checkpoint to 21,055 bytes free and a 10,240-byte
 largest block, but `esp_bt_controller_init` still failed with `-4`. Map analysis
 then identified LVGL's fixed 64 KiB internal `.bss` pool as the remaining large
-reservation. Dial now keeps a 32 KiB internal LVGL base and registers a 64 KiB
-PSRAM expansion pool, reclaiming 32 KiB of contiguous internal memory without
+reservation. Dial now keeps a 24 KiB internal LVGL base and registers a 72 KiB
+PSRAM expansion pool, reclaiming 40 KiB of contiguous internal memory without
 shrinking the measured 16 KiB UI stack. Hardware acceptance requires the new
 pre-NimBLE checkpoint and a successful controller start; a green build alone
 does not establish either.
 
 The first split-pool artifacts never reached that checkpoint:
-`lv_mem_add_pool()` rejected the 64 KiB external pool because LVGL's compiled
+`lv_mem_add_pool()` rejected the original 64 KiB external pool because LVGL's compiled
 `LV_MEM_POOL_EXPAND_SIZE` was still zero. An explicitly aligned allocation
 failed identically, ruling out alignment. The effective build must therefore
-assert both the 32 KiB base and 64 KiB expansion Kconfig values.
+assert both the 24 KiB base and 72 KiB expansion Kconfig values.
 
 ## Coexistence verification
 
