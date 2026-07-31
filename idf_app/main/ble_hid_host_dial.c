@@ -6,11 +6,20 @@
 #include "ui_network.h"
 
 #include <esp_log.h>
+#include <esp_heap_caps.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 static const char *TAG = "ble_hid_dial";
+
+static void log_memory(const char *stage) {
+    ESP_LOGI(TAG, "%s: internal free=%u largest=%u PSRAM free=%u",
+             stage,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+}
 
 static void apply_status_on_ui(void *arg) {
     char *text = arg;
@@ -80,7 +89,10 @@ bool ble_hid_host_dial_start(void) {
         .on_status = on_status,
         .callback_context = NULL,
     };
+    log_memory("before service allocation");
     rk_ble_hid_host_result_t result = rk_ble_hid_host_init(&config);
+    log_memory(result == RK_BLE_HID_HOST_OK ? "after service allocation" :
+                                               "service allocation rejected");
     if (result != RK_BLE_HID_HOST_OK) {
         ESP_LOGE(TAG, "BLE HID host init rejected: %s",
                  rk_ble_hid_host_result_name(result));

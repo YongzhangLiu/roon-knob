@@ -32,6 +32,7 @@ static const char *TAG = "main";
 
 // UI task stack size (needs headroom for LVGL rendering + gzip decompression)
 #define UI_LOOP_STACK_SIZE 32768
+#define UI_LOOP_CORE 1
 
 // UI task handle for display sleep management
 static TaskHandle_t g_ui_task_handle = NULL;
@@ -45,6 +46,18 @@ static atomic_bool s_config_server_stop_pending = ATOMIC_VAR_INIT(false);
 static volatile bool s_mdns_init_pending = false;
 static volatile bool s_ble_init_pending = false;
 static bool s_ble_initialized = false;
+
+static void log_memory(const char *stage) {
+    ESP_LOGI(TAG,
+             "%s: internal free=%u largest=%u DMA free=%u largest=%u PSRAM free=%u largest=%u",
+             stage,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+}
 
 static void show_config_durability_diagnostic(void) {
     controller_config_snapshot_t config = {0};
@@ -226,7 +239,8 @@ static void check_ota_status(void) {
 
 static void ui_loop_task(void *arg) {
     (void)arg;
-    ESP_LOGI(TAG, "UI loop task started");
+    ESP_LOGI(TAG, "UI loop task started on core %d", xPortGetCoreID());
+    log_memory("UI loop start");
 
     uint32_t ota_check_counter = 0;
 
@@ -246,15 +260,23 @@ static void ui_loop_task(void *arg) {
             check_ota_status();
         }
 
-        // Check stack usage periodically (every 60 seconds = 6000 iterations at 10ms)
+        // Keep early boot telemetry frequent enough to attribute BLE allocations,
+        // then reduce it to once per minute for normal operation.
         static uint32_t stack_check_counter = 0;
-        if (++stack_check_counter >= 6000) {
+        static uint8_t early_telemetry_samples = 0;
+        const uint32_t stack_check_interval =
+            early_telemetry_samples < 6 ? 500 : 6000;
+        if (++stack_check_counter >= stack_check_interval) {
             stack_check_counter = 0;
             UBaseType_t hwm = uxTaskGetStackHighWaterMark(NULL);
             uint32_t free_bytes = hwm * sizeof(StackType_t);
             uint32_t used_bytes = UI_LOOP_STACK_SIZE - free_bytes;
             ESP_LOGI(TAG, "ui_loop stack usage: %u/%u bytes (peak usage, %u free)",
                      (unsigned int)used_bytes, UI_LOOP_STACK_SIZE, (unsigned int)free_bytes);
+            log_memory("UI loop watermark");
+            if (early_telemetry_samples < 6) {
+                early_telemetry_samples++;
+            }
         }
 
         // Process deferred operations (from WiFi event callback)
@@ -272,7 +294,10 @@ static void ui_loop_task(void *arg) {
             s_ble_init_pending = false;
             if (!s_ble_initialized) {
                 ESP_LOGI(TAG, "Initializing BLE media-remote host...");
+                log_memory("before BLE host init");
                 s_ble_initialized = ble_hid_host_dial_start();
+                log_memory(s_ble_initialized ? "after BLE host init" :
+                                                "BLE host init rejected");
             }
         }
         if (atomic_exchange_explicit(&s_config_server_stop_pending, false,
@@ -331,6 +356,7 @@ void app_main(void) {
         ESP_LOGE(TAG, "Display driver registration failed!");
         return;
     }
+    log_memory("after LVGL display allocation");
 
     // Initialize font manager (pre-rendered bitmap fonts for Unicode support)
     ESP_LOGI(TAG, "Initializing font manager...");
@@ -341,6 +367,7 @@ void app_main(void) {
     // Now safe to initialize UI (depends on LVGL display being registered)
     ESP_LOGI(TAG, "Initializing UI...");
     ui_init();
+    log_memory("after UI initialization");
 
     // Install the controller action handler before input can be processed.
     app_controller_init();
@@ -350,8 +377,10 @@ void app_main(void) {
 
     // Create UI loop task BEFORE starting WiFi (WiFi events need LVGL task running)
     ESP_LOGI(TAG, "Creating UI loop task");
-    if (xTaskCreate(ui_loop_task, "ui_loop", UI_LOOP_STACK_SIZE, NULL, 2,
-                    &g_ui_task_handle) != pdPASS) {
+    log_memory("before UI loop task");
+    if (xTaskCreatePinnedToCore(ui_loop_task, "ui_loop", UI_LOOP_STACK_SIZE,
+                                NULL, 2, &g_ui_task_handle,
+                                UI_LOOP_CORE) != pdPASS) {
         ESP_LOGE(TAG,
                  "UI loop task creation failed: internal heap free=%u largest=%u",
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
@@ -361,6 +390,7 @@ void app_main(void) {
     ESP_LOGI(TAG, "UI loop task created: internal heap free=%u largest=%u",
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    log_memory("after UI loop task");
 
     // Initialize display sleep management now that UI task is created
     ESP_LOGI(TAG, "Initializing display sleep management");
@@ -369,6 +399,7 @@ void app_main(void) {
     // Start application logic
     ESP_LOGI(TAG, "Starting app...");
     app_entry();
+    log_memory("after bridge worker start");
     show_config_durability_diagnostic();
 
     // Start WiFi AFTER UI task is running (WiFi event callbacks use lv_async_call)

@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "esp_err.h"
+#include "esp_heap_caps.h"
 #include "esp_hid_common.h"
 #include "esp_hidh.h"
 #include "esp_log.h"
@@ -42,6 +43,7 @@
 #define MAX_START_RETRY_ATTEMPTS 5
 #define HOST_EXITED_BIT BIT0
 #define STOP_CALL_DONE_BIT BIT1
+#define BLE_CORE 0
 
 void ble_store_config_init(void);
 
@@ -169,6 +171,14 @@ typedef struct {
 } service_t;
 
 static service_t s;
+
+static void log_memory(const char *stage) {
+    ESP_LOGI(TAG, "%s: internal free=%u largest=%u PSRAM free=%u",
+             stage,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+}
 
 static rk_ble_hid_host_state_t status_state(void);
 
@@ -457,6 +467,10 @@ static void on_reset(int reason) {
 
 static void nimble_host_task(void *arg) {
     (void)arg;
+    ESP_LOGI(TAG, "NimBLE host task started on core %d; stack free=%u",
+             xPortGetCoreID(),
+             (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
+    log_memory("before nimble_port_run");
     nimble_port_run();
     /* This acknowledgement is the owner task's proof that run() returned. */
     xEventGroupSetBits(s.lifecycle, HOST_EXITED_BIT);
@@ -636,11 +650,13 @@ static void schedule_start_retry(rk_ble_hid_host_error_t error,
 static void start_stack(void) {
     if (s.fatal_teardown || s.stack_started) return;
     set_state(RK_BLE_HID_HOST_STATE_STARTING, RK_BLE_HID_HOST_ERROR_NONE);
+    log_memory("before nimble_port_init");
     if (nimble_port_init() != ESP_OK) {
         schedule_start_retry(RK_BLE_HID_HOST_ERROR_NIMBLE_INIT, false);
         return;
     }
     s.stack_started = true;
+    log_memory("after nimble_port_init");
     xEventGroupClearBits(s.lifecycle, HOST_EXITED_BIT);
     ble_hs_cfg.sync_cb = on_sync;
     ble_hs_cfg.reset_cb = on_reset;
@@ -665,6 +681,7 @@ static void start_stack(void) {
         return;
     }
     s.hidh_started = true;
+    log_memory("after esp_hidh_init");
     const int listener_rc =
         ble_gap_event_listener_register(&s.gap_listener, gap_listener_event, NULL);
     if (listener_rc != 0) {
@@ -677,7 +694,8 @@ static void start_stack(void) {
         return;
     }
     s.gap_listener_registered = true;
-    if (xTaskCreate(nimble_host_task, "rk_ble_host", 4096, NULL, 5, NULL) != pdPASS) {
+    if (xTaskCreatePinnedToCore(nimble_host_task, "rk_ble_host", 4096, NULL,
+                                5, NULL, BLE_CORE) != pdPASS) {
         ble_gap_event_listener_unregister(&s.gap_listener);
         s.gap_listener_registered = false;
         esp_hidh_deinit();
@@ -688,6 +706,7 @@ static void start_stack(void) {
         return;
     }
     s.host_started = true;
+    log_memory("after NimBLE host task creation");
 }
 
 static void close_all_devices(void) {
@@ -740,8 +759,8 @@ static void finish_stop_if_ready(void) {
         s.stop_requested = true;
         s.stop_result = ESP_FAIL;
         xEventGroupClearBits(s.lifecycle, STOP_CALL_DONE_BIT);
-        if (xTaskCreate(nimble_stop_task, "rk_ble_stop", 3072, NULL, 5,
-                        NULL) != pdPASS) {
+        if (xTaskCreatePinnedToCore(nimble_stop_task, "rk_ble_stop", 3072,
+                                    NULL, 5, NULL, BLE_CORE) != pdPASS) {
             fail_teardown("nimble stop task creation", ESP_ERR_NO_MEM);
         }
         return;
@@ -850,8 +869,8 @@ static void connect_device(const rk_ble_hid_host_device_t *device) {
     job->device = *device;
     job->generation = s.opening_generation;
     s.connect_worker_active = true;
-    if (xTaskCreate(connect_worker_task, "rk_ble_connect", 5120, job, 4,
-                    NULL) != pdPASS) {
+    if (xTaskCreatePinnedToCore(connect_worker_task, "rk_ble_connect", 5120,
+                                job, 4, NULL, BLE_CORE) != pdPASS) {
         s.connect_worker_active = false;
         free(job);
         set_state(RK_BLE_HID_HOST_STATE_READY,
@@ -1149,6 +1168,11 @@ static void process_event(const service_event_t *event) {
 
 static void owner_task(void *arg) {
     (void)arg;
+    ESP_LOGI(TAG, "BLE service task started on core %d; stack free=%u",
+             xPortGetCoreID(),
+             (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
+    log_memory("BLE service task start");
+    TickType_t next_telemetry = xTaskGetTickCount() + pdMS_TO_TICKS(5000);
     for (;;) {
         command_t command;
         service_event_t event;
@@ -1206,6 +1230,13 @@ static void owner_task(void *arg) {
                 start_stack();
             }
         }
+        if ((int32_t)(now - next_telemetry) >= 0) {
+            ESP_LOGI(TAG, "BLE service stack free=%u",
+                     (unsigned)(uxTaskGetStackHighWaterMark(NULL) *
+                                sizeof(StackType_t)));
+            log_memory("BLE service watermark");
+            next_telemetry = now + pdMS_TO_TICKS(60000);
+        }
         vTaskDelay(pdMS_TO_TICKS(25));
     }
 }
@@ -1218,6 +1249,7 @@ static rk_ble_hid_host_result_t enqueue_command(const command_t *command) {
 rk_ble_hid_host_result_t rk_ble_hid_host_init(const rk_ble_hid_host_config_t *config) {
     if (!config) return RK_BLE_HID_HOST_ERR_INVALID_ARGUMENT;
     if (s.owner_task) return RK_BLE_HID_HOST_ERR_ALREADY_INITIALIZED;
+    log_memory("before BLE queues and service task");
     memset(&s, 0, sizeof(s));
     s.config = *config;
     s.status.state = RK_BLE_HID_HOST_STATE_UNAVAILABLE;
@@ -1230,7 +1262,8 @@ rk_ble_hid_host_result_t rk_ble_hid_host_init(const rk_ble_hid_host_config_t *co
     s.device_lock = xSemaphoreCreateMutex();
     if (!s.commands || !s.lifecycle_events || !s.events || !s.lifecycle ||
         !s.status_lock || !s.device_lock ||
-        xTaskCreate(owner_task, "rk_ble_service", 6144, NULL, 4, &s.owner_task) != pdPASS) {
+        xTaskCreatePinnedToCore(owner_task, "rk_ble_service", 6144, NULL, 4,
+                                &s.owner_task, BLE_CORE) != pdPASS) {
         if (s.owner_task) {
             vTaskDelete(s.owner_task);
         }
@@ -1256,7 +1289,10 @@ rk_ble_hid_host_result_t rk_ble_hid_host_init(const rk_ble_hid_host_config_t *co
         return RK_BLE_HID_HOST_ERR_QUEUE_FULL;
     }
     const command_t boot = {.type = COMMAND_BOOT};
-    return enqueue_command(&boot);
+    const rk_ble_hid_host_result_t result = enqueue_command(&boot);
+    log_memory(result == RK_BLE_HID_HOST_OK ? "after BLE queues and service task" :
+                                               "BLE boot command rejected");
+    return result;
 }
 
 rk_ble_hid_host_result_t rk_ble_hid_host_set_enabled(bool enabled) {
