@@ -23,6 +23,10 @@
 #include <stdatomic.h>
 #include <cJSON.h>
 
+#ifdef ESP_PLATFORM
+#include <esp_heap_caps.h>
+#endif
+
 // Forward declarations for config handling
 static bool fetch_knob_config(void);
 static void apply_knob_config(const rk_cfg_t *cfg);
@@ -38,6 +42,45 @@ static void check_charging_state_change(void);
 #define POLL_DELAY_SLEEPING_MS 30000       // 30 seconds when display is sleeping
 #define POLL_DELAY_SLEEPING_STOPPED_MS 60000  // 60 seconds when sleeping AND zone stopped
 #define POLL_DELAY_BRIDGE_ERROR_MS 10000   // 10 seconds when bridge unreachable
+
+/* Bridge responses and queued presentation snapshots are transient and can be
+ * relatively numerous. Keep them out of the small internal heap shared by the
+ * radio controller and display DMA. free() is valid for ESP heap-cap blocks. */
+static void *bridge_external_alloc(size_t size) {
+#ifdef ESP_PLATFORM
+    return heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
+    return malloc(size);
+#endif
+}
+
+static char *bridge_external_strdup(const char *value) {
+    if (!value) {
+        return NULL;
+    }
+    size_t size = strlen(value) + 1;
+    char *copy = bridge_external_alloc(size);
+    if (copy) {
+        memcpy(copy, value, size);
+    }
+    return copy;
+}
+
+static void bridge_json_allocator_init(void) {
+    static bool initialized = false;
+    if (initialized) {
+        return;
+    }
+
+    /* cJSON hooks are process-global. Install them once before the bridge
+     * worker starts, and never switch them while JSON trees may be live. */
+    cJSON_Hooks hooks = {
+        .malloc_fn = bridge_external_alloc,
+        .free_fn = free,
+    };
+    cJSON_InitHooks(&hooks);
+    initialized = true;
+}
 
 struct now_playing_state {
     char line1[MAX_LINE];
@@ -325,7 +368,7 @@ static void post_ui_network_status(const char *status) {
     if ((!status || status[0] == '\0') && keep_durability_warning) {
         status = "Settings saved but could not be verified";
     }
-    char *copy = strdup(status ? status : "");
+    char *copy = bridge_external_strdup(status ? status : "");
     if (!copy) {
         return;
     }
@@ -380,7 +423,7 @@ static void ui_connectivity_update_cb(void *arg) {
 }
 
 static void post_ui_connectivity_update(const char *line1, const char *line2) {
-    controller_connectivity_view_t *view = malloc(sizeof(*view));
+    controller_connectivity_view_t *view = bridge_external_alloc(sizeof(*view));
     if (!view) {
         return;
     }
@@ -432,7 +475,7 @@ static void post_ui_update(const struct now_playing_state *state) {
         return;
     }
 
-    controller_media_view_t *view = malloc(sizeof(*view));
+    controller_media_view_t *view = bridge_external_alloc(sizeof(*view));
     if (!view) {
         return;
     }
@@ -477,7 +520,7 @@ static void post_ui_status_copy(bool *status_copy) {
 }
 
 static void post_ui_status(bool online) {
-    bool *copy = malloc(sizeof(*copy));
+    bool *copy = bridge_external_alloc(sizeof(*copy));
     if (!copy) {
         return;
     }
@@ -495,7 +538,7 @@ static void post_ui_message(const char *msg) {
     if (!msg) {
         return;
     }
-    char *copy = strdup(msg);
+    char *copy = bridge_external_strdup(msg);
     if (!copy) {
         return;
     }
@@ -512,7 +555,7 @@ static void post_ui_zone_name(const char *name) {
     if (!name) {
         return;
     }
-    char *copy = strdup(name);
+    char *copy = bridge_external_strdup(name);
     if (!copy) {
         return;
     }
@@ -1132,6 +1175,7 @@ void bridge_client_start(void) {
         LOGW("Bridge start skipped: controller configuration unavailable");
         return;
     }
+    bridge_json_allocator_init();
     platform_task_init();
     lock_state();
     strncpy(s_state.zone_label,
@@ -1531,7 +1575,7 @@ static void apply_knob_config(const rk_cfg_t *cfg) {
          rotation, is_charging ? "yes" : "no");
 
     // Post to UI thread since LVGL is not thread-safe
-    struct apply_config_ui_data *data = malloc(sizeof(*data));
+    struct apply_config_ui_data *data = bridge_external_alloc(sizeof(*data));
     if (data) {
         data->rotation = rotation;
         data->is_charging = is_charging;

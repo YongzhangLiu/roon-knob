@@ -140,7 +140,8 @@ and NimBLE. The shipping profile is intentionally narrow:
 | UI task | Core 1, 16 KiB internal stack | Keeps rendering and its stack away from radio work. |
 | NimBLE host/service tasks | Core 0, internal stacks | Co-locates BLE with Wi-Fi while retaining cache-safe stacks for bonding/NVS paths. |
 | Bridge network worker | 16 KiB PSRAM stack | Reclaims a contiguous internal block after endpoint persistence was moved to the internal UI task. |
-| JSON/adaptive UI payloads | Bounded PSRAM buffers | Keeps transient server payloads out of controller/DMA memory. |
+| LVGL object heap | 32 KiB internal + 64 KiB PSRAM | Reclaims 32 KiB of fixed internal `.bss` while increasing the total UI-object budget. |
+| JSON/adaptive UI payloads | Bounded PSRAM bodies, parse trees, and queued views | Keeps both large responses and many small transient allocations out of controller/DMA memory. |
 | Wi-Fi task | Core 0 | Explicit ESP-IDF configuration. |
 
 Task stacks that execute flash, NVS, OTA, display DMA, or radio-controller paths
@@ -180,12 +181,17 @@ internal heap enough to prevent the UI stack from being created even while
 total free memory appears generous; see [Display Subsystem](DISPLAY.md) for
 the concrete Dial failure and acceptance rule.
 
-The corresponding BLE-controller failure was observed with only 4,867 bytes
-of internal heap free and a 1,600-byte largest block immediately before
-`nimble_port_init()`. ESP-IDF then reported `Malloc failed` and
-`esp_bt_controller_init -2`. The bridge worker and transient HTTP/HTML payloads
-must therefore remain PSRAM-backed so the controller can reserve its required
-contiguous internal block.
+The first BLE-controller failure was observed with only 4,867 bytes of internal
+heap free and a 1,600-byte largest block immediately before
+`nimble_port_init()`. Moving the bridge worker and transient HTTP/HTML buffers
+to PSRAM improved that checkpoint to 21,055 bytes free and a 10,240-byte
+largest block, but `esp_bt_controller_init` still failed with `-4`. Map analysis
+then identified LVGL's fixed 64 KiB internal `.bss` pool as the remaining large
+reservation. Dial now keeps a 32 KiB internal LVGL base and registers a 64 KiB
+PSRAM expansion pool, reclaiming 32 KiB of contiguous internal memory without
+shrinking the measured 16 KiB UI stack. Hardware acceptance requires the new
+pre-NimBLE checkpoint and a successful controller start; a green build alone
+does not establish either.
 
 ## Coexistence verification
 

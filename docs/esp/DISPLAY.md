@@ -59,6 +59,13 @@ initialization, and `ui_loop` logs its stack high-water mark. A static screen
 should therefore be investigated as a task/lifecycle or memory problem first,
 not treated as an expected provisioning state.
 
+LVGL uses a split heap on Dial: a 32 KiB built-in pool in internal SRAM plus a
+64 KiB expansion pool registered from PSRAM immediately after `lv_init()`.
+This raises the total LVGL object budget to 96 KiB while returning 32 KiB of
+contiguous internal SRAM to the Bluetooth controller. The display's DMA draw
+buffers and the UI task stack remain internal. Boot telemetry reports LVGL
+total, free, largest-free, utilization, and fragmentation after UI creation.
+
 #### Contiguous-block rule
 
 `heap_caps_get_free_size(MALLOC_CAP_INTERNAL)` is not sufficient evidence that
@@ -90,11 +97,20 @@ adaptive-screen callers can request a smaller schema-specific ceiling with
 `platform_http_get_bounded()`. This prevents an oversized or chunked response
 from consuming unbounded memory.
 
+The bridge also installs a fixed PSRAM allocator for cJSON before its worker
+starts. Its parse-tree nodes, queued media/connectivity snapshots, copied UI
+strings, and deferred configuration snapshots therefore bypass
+`CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL`; their small allocation sizes no longer
+quietly prefer internal SRAM. The cJSON hooks are process-global and must be
+installed once, never switched while trees may be live.
+
 Only the active screen should be materialized as LVGL objects. Fetch, parse,
 materialize, then release or evict inactive payloads rather than retaining an
 HTTP body, parser tree, decoded assets, and multiple LVGL trees simultaneously.
 Display DMA buffers, the LVGL task stack, and latency-sensitive control state
-remain in internal RAM.
+remain in internal RAM. LVGL objects may use either of its registered pools;
+measure the active screen with the LVGL heap telemetry rather than assuming all
+widget memory remains internal.
 
 ### How LVGL Works
 

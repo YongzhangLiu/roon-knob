@@ -34,6 +34,7 @@ static const char *TAG = "main";
 // 16 KiB fits after the Dial's LVGL DMA buffers while retaining measured margin.
 #define UI_LOOP_STACK_SIZE (16 * 1024)
 #define UI_LOOP_CORE 1
+#define LVGL_PSRAM_POOL_SIZE (64 * 1024)
 
 // UI task handle for display sleep management
 static TaskHandle_t g_ui_task_handle = NULL;
@@ -47,6 +48,8 @@ static atomic_bool s_config_server_stop_pending = ATOMIC_VAR_INIT(false);
 static volatile bool s_mdns_init_pending = false;
 static volatile bool s_ble_init_pending = false;
 static bool s_ble_initialized = false;
+static void *s_lvgl_psram_pool_memory = NULL;
+static lv_mem_pool_t s_lvgl_psram_pool = NULL;
 
 static void log_memory(const char *stage) {
     ESP_LOGI(TAG,
@@ -58,6 +61,43 @@ static void log_memory(const char *stage) {
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+}
+
+static bool add_lvgl_psram_pool(void) {
+    s_lvgl_psram_pool_memory =
+        heap_caps_malloc(LVGL_PSRAM_POOL_SIZE,
+                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_lvgl_psram_pool_memory) {
+        ESP_LOGE(TAG, "Could not allocate %u-byte LVGL PSRAM pool",
+                 (unsigned)LVGL_PSRAM_POOL_SIZE);
+        return false;
+    }
+
+    s_lvgl_psram_pool =
+        lv_mem_add_pool(s_lvgl_psram_pool_memory, LVGL_PSRAM_POOL_SIZE);
+    if (!s_lvgl_psram_pool) {
+        ESP_LOGE(TAG, "Could not register LVGL PSRAM pool");
+        heap_caps_free(s_lvgl_psram_pool_memory);
+        s_lvgl_psram_pool_memory = NULL;
+        return false;
+    }
+
+    ESP_LOGI(TAG, "Added %u-byte LVGL PSRAM expansion pool",
+             (unsigned)LVGL_PSRAM_POOL_SIZE);
+    return true;
+}
+
+static void log_lvgl_memory(const char *stage) {
+    lv_mem_monitor_t monitor = {0};
+    lv_mem_monitor(&monitor);
+    ESP_LOGI(TAG,
+             "%s: LVGL total=%u free=%u largest=%u used=%u%% fragmented=%u%%",
+             stage,
+             (unsigned)monitor.total_size,
+             (unsigned)monitor.free_size,
+             (unsigned)monitor.free_biggest_size,
+             (unsigned)monitor.used_pct,
+             (unsigned)monitor.frag_pct);
 }
 
 static void show_config_durability_diagnostic(void) {
@@ -274,6 +314,7 @@ static void ui_loop_task(void *arg) {
             uint32_t used_bytes = UI_LOOP_STACK_SIZE - free_bytes;
             ESP_LOGI(TAG, "ui_loop stack usage: %u/%u bytes (peak usage, %u free)",
                      (unsigned int)used_bytes, UI_LOOP_STACK_SIZE, (unsigned int)free_bytes);
+            log_lvgl_memory("UI loop watermark");
             log_memory("UI loop watermark");
             if (early_telemetry_samples < 6) {
                 early_telemetry_samples++;
@@ -355,6 +396,9 @@ void app_main(void) {
     // Initialize LVGL library
     ESP_LOGI(TAG, "Initializing LVGL...");
     lv_init();
+    if (!add_lvgl_psram_pool()) {
+        return;
+    }
 
     // Register LVGL display driver and start LVGL task
     ESP_LOGI(TAG, "Registering LVGL display driver...");
@@ -373,6 +417,7 @@ void app_main(void) {
     // Now safe to initialize UI (depends on LVGL display being registered)
     ESP_LOGI(TAG, "Initializing UI...");
     ui_init();
+    log_lvgl_memory("after UI initialization");
     log_memory("after UI initialization");
 
     // Install the controller action handler before input can be processed.
