@@ -1,5 +1,6 @@
 #include "bridge_client.h"
 
+#include "bridge_command_plan.h"
 #include "platform/platform_display.h"
 #include "platform/platform_http.h"
 #include "platform/platform_log.h"
@@ -8,8 +9,9 @@
 #include "platform/platform_task.h"
 #include "platform/platform_time.h"
 #include "os_mutex.h"
-#include "controller_input.h"
 #include "controller_presentation.h"
+#include "controller_view.h"
+#include "controller_view_compat.h"
 
 #include <ctype.h>
 #include <stddef.h>
@@ -28,16 +30,12 @@ static void check_charging_state_change(void);
 
 #define MAX_LINE 128
 #define MAX_ZONE_NAME 64
-#define MAX_ZONES 64
+#define MAX_ZONES BRIDGE_CLIENT_MAX_ZONES
 #define POLL_DELAY_AWAKE_CHARGING_MS 2000   // 2 seconds when charging and display on
 #define POLL_DELAY_AWAKE_BATTERY_MS 5000   // 5 seconds on battery to save power
 #define POLL_DELAY_SLEEPING_MS 30000       // 30 seconds when display is sleeping
 #define POLL_DELAY_SLEEPING_STOPPED_MS 60000  // 60 seconds when sleeping AND zone stopped
 #define POLL_DELAY_BRIDGE_ERROR_MS 10000   // 10 seconds when bridge unreachable
-
-// Special zone picker options (not actual zones)
-#define ZONE_ID_BACK "__back__"
-#define ZONE_ID_SETTINGS "__settings__"
 
 struct now_playing_state {
     char line1[MAX_LINE];
@@ -53,11 +51,6 @@ struct now_playing_state {
     char image_key[128];  // For tracking album artwork changes
     char config_sha[9];   // Config SHA for change detection
     char zones_sha[9];    // Zones SHA for zone list change detection
-};
-
-struct zone_entry {
-    char id[MAX_ZONE_NAME];
-    char name[MAX_ZONE_NAME];
 };
 
 // Device operational state for safe volume control
@@ -82,7 +75,7 @@ static const char* device_state_name(device_state_t state) {
 
 struct bridge_state {
     rk_cfg_t cfg;
-    struct zone_entry zones[MAX_ZONES];
+    bridge_zone_t zones[MAX_ZONES];
     int zone_count;
     char zone_label[MAX_ZONE_NAME];
     bool zone_resolved;
@@ -101,6 +94,7 @@ static float s_last_known_volume = 0.0f;   // Cached volume for optimistic UI up
 static float s_last_known_volume_min = -80.0f;  // Cached volume min for clamping
 static float s_last_known_volume_max = 0.0f;    // Cached volume max for clamping
 static float s_last_known_volume_step = 1.0f;  // Cached volume step
+static uint32_t s_artwork_generation;
 static bool s_bridge_verified = false;  // True after bridge found AND responded successfully
 static uint32_t s_last_mdns_check_ms = 0;  // Timestamp of last mDNS check
 static bool s_last_charging_state = true;  // Track charging state for config reapply
@@ -152,36 +146,22 @@ static void reset_bridge_fail_count(void);
 static void increment_bridge_fail_count(void);
 
 static void ui_update_cb(void *arg) {
-    struct now_playing_state *state = arg;
-    if (!state) {
-        LOGI("ui_update_cb: state is NULL!");
+    controller_media_view_t *view = arg;
+    if (!view) {
+        LOGI("ui_update_cb: view is NULL!");
         return;
     }
+
     // Cache volume for optimistic UI updates
-    s_last_known_volume = state->volume;
-    s_last_known_volume_min = state->volume_min;
-    s_last_known_volume_max = state->volume_max;
-    s_last_known_volume_step = state->volume_step;
-    controller_presentation_update(state->line1, state->line2, state->line3,
-                                   state->is_playing, state->volume,
-                                   state->volume_min, state->volume_max,
-                                   state->volume_step, state->seek_position,
-                                   state->length);
+    lock_state();
+    s_last_known_volume = view->volume;
+    s_last_known_volume_min = view->volume_min;
+    s_last_known_volume_max = view->volume_max;
+    s_last_known_volume_step = view->volume_step;
+    unlock_state();
 
-    // Update artwork if image_key changed or forced refresh
-    static char last_image_key[128] = "";
-    bool force_refresh = s_force_artwork_refresh;
-    if (force_refresh) {
-        s_force_artwork_refresh = false;
-        last_image_key[0] = '\0';  // Clear cache to force reload
-    }
-    if (force_refresh || strcmp(state->image_key, last_image_key) != 0) {
-        controller_presentation_set_artwork(state->image_key);
-        strncpy(last_image_key, state->image_key, sizeof(last_image_key) - 1);
-        last_image_key[sizeof(last_image_key) - 1] = '\0';
-    }
-
-    free(state);
+    controller_view_compat_apply_media(view);
+    free(view);
 }
 
 static bool host_is_valid(const char *url) {
@@ -232,30 +212,23 @@ static void post_ui_network_status(const char *status) {
     }
 }
 
-typedef struct {
-    char line1[96];
-    char line2[96];
-} connectivity_update_t;
-
 static void ui_connectivity_update_cb(void *arg) {
-    connectivity_update_t *update = arg;
-    if (!update) {
+    controller_connectivity_view_t *view = arg;
+    if (!view) {
         return;
     }
-    controller_presentation_update(update->line1, update->line2, "",
-                                   false, 0.0f, 0.0f, 100.0f, 1.0f, 0, 0);
-    free(update);
+    controller_view_compat_apply_connectivity(view);
+    free(view);
 }
 
 static void post_ui_connectivity_update(const char *line1, const char *line2) {
-    connectivity_update_t *update = calloc(1, sizeof(*update));
-    if (!update) {
+    controller_connectivity_view_t *view = malloc(sizeof(*view));
+    if (!view) {
         return;
     }
-    rk_strlcpy(update->line1, line1 ? line1 : "", sizeof(update->line1));
-    rk_strlcpy(update->line2, line2 ? line2 : "", sizeof(update->line2));
-    if (!platform_task_post_to_ui(ui_connectivity_update_cb, update)) {
-        free(update);
+    controller_connectivity_view_init(view, line1, line2);
+    if (!platform_task_post_to_ui(ui_connectivity_update_cb, view)) {
+        free(view);
     }
 }
 
@@ -297,14 +270,45 @@ static void default_now_playing(struct now_playing_state *state) {
 }
 
 static void post_ui_update(const struct now_playing_state *state) {
-    struct now_playing_state *copy = malloc(sizeof(*copy));
-    if (!copy || !state) {
-        free(copy);
+    if (!state) {
         return;
     }
-    *copy = *state;
-    if (!platform_task_post_to_ui(ui_update_cb, copy)) {
-        free(copy);
+
+    controller_media_view_t *view = malloc(sizeof(*view));
+    if (!view) {
+        return;
+    }
+
+    lock_state();
+    bool force_refresh = s_force_artwork_refresh;
+    if (force_refresh) {
+        s_force_artwork_refresh = false;
+        ++s_artwork_generation;
+    }
+    uint32_t artwork_generation = s_artwork_generation;
+    unlock_state();
+
+    controller_media_view_init(
+        view,
+        state->line1,
+        state->line2,
+        state->line3,
+        state->is_playing,
+        state->volume,
+        state->volume_min,
+        state->volume_max,
+        state->volume_step,
+        state->seek_position,
+        state->length,
+        state->image_key,
+        artwork_generation);
+    if (!platform_task_post_to_ui(ui_update_cb, view)) {
+        if (force_refresh) {
+            lock_state();
+            s_force_artwork_refresh = true;
+            unlock_state();
+        }
+        free(view);
     }
 }
 
@@ -630,7 +634,7 @@ static bool refresh_zone_label(bool prefer_zone_id) {
         bool found = false;
         bool should_sync = false;
         for (int i = 0; i < s_state.zone_count; ++i) {
-            struct zone_entry *entry = &s_state.zones[i];
+            bridge_zone_t *entry = &s_state.zones[i];
             if (prefer_zone_id && s_state.cfg.zone_id[0] && strcmp(entry->id, s_state.cfg.zone_id) == 0) {
                 strncpy(s_state.zone_label, entry->name, sizeof(s_state.zone_label) - 1);
                 s_state.zone_label[sizeof(s_state.zone_label) - 1] = '\0';
@@ -651,7 +655,7 @@ static bool refresh_zone_label(bool prefer_zone_id) {
             }
         }
         if (!found && s_state.zone_count > 0) {
-            struct zone_entry *entry = &s_state.zones[0];
+            bridge_zone_t *entry = &s_state.zones[0];
             strncpy(s_state.cfg.zone_id, entry->id, sizeof(s_state.cfg.zone_id) - 1);
             s_state.cfg.zone_id[sizeof(s_state.cfg.zone_id) - 1] = '\0';
             strncpy(s_state.zone_label, entry->name, sizeof(s_state.zone_label) - 1);
@@ -953,255 +957,61 @@ void bridge_client_start(const rk_cfg_t *cfg) {
     platform_task_start(bridge_poll_thread, NULL);
 }
 
-void bridge_client_handle_input(controller_input_action_t event) {
-    if (controller_presentation_is_zone_picker_visible()) {
-        if (event == CONTROLLER_INPUT_VOL_UP) {
-            controller_presentation_zone_picker_scroll(1);
-            return;
-        }
-        if (event == CONTROLLER_INPUT_VOL_DOWN) {
-            controller_presentation_zone_picker_scroll(-1);
-            return;
-        }
-        if (event == CONTROLLER_INPUT_PLAY_PAUSE) {
-            // Get the selected zone ID directly from the picker
-            char selected_id[MAX_ZONE_NAME] = {0};
-            controller_presentation_zone_picker_get_selected_id(selected_id, sizeof(selected_id));
-            LOGI("Zone picker: selected zone id '%s'", selected_id);
-
-            // Check for Back (always a no-op, just closes picker)
-            if (strcmp(selected_id, ZONE_ID_BACK) == 0) {
-                LOGI("Zone picker: Back selected (no-op)");
-                controller_presentation_hide_zone_picker();
-                return;
-            }
-
-            // Check for Settings
-            if (strcmp(selected_id, ZONE_ID_SETTINGS) == 0) {
-                LOGI("Zone picker: Settings selected");
-                controller_presentation_hide_zone_picker();
-                controller_presentation_show_settings();
-                return;
-            }
-
-            // Check if user selected the same zone they started with (no-op)
-            if (controller_presentation_zone_picker_is_current_selection()) {
-                LOGI("Zone picker: Same zone selected (no-op)");
-                controller_presentation_hide_zone_picker();
-                return;
-            }
-
-            // Zone selection
-            char label_copy[MAX_ZONE_NAME] = {0};
-            bool updated = false;
-            lock_state();
-            // Find the zone by ID to get its name
-            for (int i = 0; i < s_state.zone_count; ++i) {
-                struct zone_entry *entry = &s_state.zones[i];
-                if (strcmp(entry->id, selected_id) == 0) {
-                    LOGI("Zone picker: switching to zone '%s' (id=%s)", entry->name, entry->id);
-                    strncpy(s_state.cfg.zone_id, entry->id, sizeof(s_state.cfg.zone_id) - 1);
-                    s_state.cfg.zone_id[sizeof(s_state.cfg.zone_id) - 1] = '\0';
-                    strncpy(s_state.zone_label, entry->name, sizeof(s_state.zone_label) - 1);
-                    s_state.zone_label[sizeof(s_state.zone_label) - 1] = '\0';
-                    strncpy(label_copy, s_state.zone_label, sizeof(label_copy) - 1);
-                    s_state.zone_resolved = true;
-                    if (s_device_state != DEVICE_STATE_OPERATIONAL) {
-                        LOGI("Device state: %s -> OPERATIONAL (zone selected)", device_state_name(s_device_state));
-                        s_device_state = DEVICE_STATE_OPERATIONAL;
-                        controller_presentation_set_network_status(NULL);  // Clear status banner when ready
-                    }
-                    s_trigger_poll = true;
-                    s_force_artwork_refresh = true;  // Force artwork reload for new zone
-                    updated = true;
-                    break;
-                }
-            }
-            if (!updated) {
-                LOGW("Zone picker: zone id '%s' not found in zone list", selected_id);
-            }
-            bool saved = !updated || persist_state_config_locked();
-            unlock_state();
-            // Hide picker FIRST to ensure it closes before any async operations
-            controller_presentation_hide_zone_picker();
-            if (updated) {
-                if (!saved) {
-                    LOGW("Could not persist selected zone");
-                }
-                post_ui_zone_name(label_copy);
-                post_ui_message("Loading zone...");
-            }
-            return;
-        }
-        if (event == CONTROLLER_INPUT_MENU) {
-            controller_presentation_hide_zone_picker();
-            return;
-        }
-        return;
+bool bridge_client_execute_command(const controller_command_t *command) {
+    if (!command) {
+        return false;
     }
 
-    if (event == CONTROLLER_INPUT_MENU) {
-        const char *names[MAX_ZONES + 3];  /* +3 for Back, Settings, margin */
-        const char *ids[MAX_ZONES + 3];
-        static const char *back_name = "Back";
-        static const char *back_id = ZONE_ID_BACK;
-        static const char *settings_name = "Settings";
-        static const char *settings_id = ZONE_ID_SETTINGS;
-        int selected = 1;  /* Default to first zone after Back */
-        int count = 0;
-
-        /* Add Back as first option */
-        names[count] = back_name;
-        ids[count] = back_id;
-        count++;
-
-        lock_state();
-        if (s_state.zone_count > 0) {
-            for (int i = 0; i < s_state.zone_count && count < MAX_ZONES + 2; ++i) {
-                names[count] = s_state.zones[i].name;
-                ids[count] = s_state.zones[i].id;
-                if (strcmp(s_state.zones[i].id, s_state.cfg.zone_id) == 0) {
-                    selected = count;
-                }
-                count++;
-            }
-        }
-        unlock_state();
-
-        /* Add Settings as last option */
-        names[count] = settings_name;
-        ids[count] = settings_id;
-        count++;
-
-        controller_presentation_show_zone_picker(names, ids, count, selected);
-        return;
-    }
-
-    char body[256];
-    switch (event) {
-    case CONTROLLER_INPUT_VOL_DOWN: {
-        lock_state();
-        float predicted_down = s_last_known_volume - s_last_known_volume_step;
-        if (predicted_down < s_last_known_volume_min) {
-            predicted_down = s_last_known_volume_min;
-        }
-        s_last_known_volume = predicted_down;
-        snprintf(body, sizeof(body), "{\"zone_id\":\"%s\",\"action\":\"vol_abs\",\"value\":%.10g}",
-            s_state.cfg.zone_id, predicted_down);
-        unlock_state();
-        controller_presentation_show_volume_change(predicted_down, s_last_known_volume_step);
-        if (!send_control_json(body)) {
-            post_ui_message("Volume change failed");
-        }
-        break;
-    }
-    case CONTROLLER_INPUT_VOL_UP: {
-        lock_state();
-        float predicted_up = s_last_known_volume + s_last_known_volume_step;
-        if (predicted_up > s_last_known_volume_max) {
-            predicted_up = s_last_known_volume_max;
-        }
-        s_last_known_volume = predicted_up;
-        snprintf(body, sizeof(body), "{\"zone_id\":\"%s\",\"action\":\"vol_abs\",\"value\":%.10g}",
-            s_state.cfg.zone_id, predicted_up);
-        unlock_state();
-        controller_presentation_show_volume_change(predicted_up, s_last_known_volume_step);
-        if (!send_control_json(body)) {
-            post_ui_message("Volume change failed");
-        }
-        break;
-    }
-    case CONTROLLER_INPUT_PLAY_PAUSE:
-        lock_state();
-        snprintf(body, sizeof(body), "{\"zone_id\":\"%s\",\"action\":\"play_pause\"}", s_state.cfg.zone_id);
-        unlock_state();
-        if (!send_control_json(body)) {
-            post_ui_message("Play/pause failed");
-        }
-        break;
-    case CONTROLLER_INPUT_NEXT_TRACK:
-        lock_state();
-        snprintf(body, sizeof(body), "{\"zone_id\":\"%s\",\"action\":\"next\"}", s_state.cfg.zone_id);
-        unlock_state();
-        if (!send_control_json(body)) {
-            post_ui_message("Next track failed");
-        }
-        break;
-    case CONTROLLER_INPUT_PREV_TRACK:
-        lock_state();
-        snprintf(body, sizeof(body), "{\"zone_id\":\"%s\",\"action\":\"prev\"}", s_state.cfg.zone_id);
-        unlock_state();
-        if (!send_control_json(body)) {
-            post_ui_message("Previous track failed");
-        }
-        break;
-    default:
-        break;
-    }
-}
-
-// Velocity-sensitive volume rotation handler
-// Maps encoder tick count over 50ms window to step size:
-//   1 tick = slow (step 1)
-//   2 ticks = medium (step 3)
-//   3+ ticks = fast (step 5)
-void bridge_client_handle_volume_rotation(int ticks) {
-    if (ticks == 0) return;
-
-    // Rotation is normalized input; the controller (not the renderer) decides
-    // whether it scrolls a picker or changes volume.
-    if (controller_presentation_is_zone_picker_visible()) {
-        controller_presentation_zone_picker_scroll(ticks > 0 ? 1 : -1);
-        return;
-    }
-
-    // Block volume changes until device is fully operational (WiFi + zones loaded)
+    bridge_command_context_t context;
+    bridge_command_plan_t plan;
     lock_state();
-    bool is_operational = (s_device_state == DEVICE_STATE_OPERATIONAL);
+    context.operational = s_device_state == DEVICE_STATE_OPERATIONAL;
+    context.zone_id = s_state.cfg.zone_id;
+    context.volume = s_last_known_volume;
+    context.volume_min = s_last_known_volume_min;
+    context.volume_max = s_last_known_volume_max;
+    context.volume_step = s_last_known_volume_step;
+    bool planned = bridge_command_plan_build(command, &context, &plan);
+    if (planned && plan.accepted && plan.updates_volume) {
+        s_last_known_volume = plan.predicted_volume;
+    }
     unlock_state();
 
-    if (!is_operational) {
-        post_ui_message("Connecting...");
-        return;
+    if (!planned) {
+        return false;
     }
 
-    // Determine velocity multiplier (applied to zone's step)
-    int abs_ticks = ticks < 0 ? -ticks : ticks;
-    int step_multiplier;
-    if (abs_ticks >= 3) {
-        step_multiplier = 5;  // Fast rotation
-    } else if (abs_ticks >= 2) {
-        step_multiplier = 3;  // Medium rotation
-    } else {
-        step_multiplier = 1;  // Slow rotation (fine-grained control)
+    static const char *const feedback_text[] = {
+        [BRIDGE_COMMAND_FEEDBACK_NONE] = NULL,
+        [BRIDGE_COMMAND_FEEDBACK_CONNECTING] = "Connecting...",
+        [BRIDGE_COMMAND_FEEDBACK_PLAYBACK_FAILED] = "Play/pause failed",
+        [BRIDGE_COMMAND_FEEDBACK_NEXT_FAILED] = "Next track failed",
+        [BRIDGE_COMMAND_FEEDBACK_PREVIOUS_FAILED] = "Previous track failed",
+        [BRIDGE_COMMAND_FEEDBACK_VOLUME_FAILED] = "Volume change failed",
+    };
+
+    if (!plan.accepted) {
+        if (plan.rejection_feedback > BRIDGE_COMMAND_FEEDBACK_NONE &&
+            plan.rejection_feedback <= BRIDGE_COMMAND_FEEDBACK_VOLUME_FAILED) {
+            post_ui_message(feedback_text[plan.rejection_feedback]);
+        }
+        return false;
+    }
+    if (plan.no_op) {
+        return true;
+    }
+    if (plan.updates_volume) {
+        controller_presentation_show_volume_change(
+            plan.predicted_volume, plan.volume_step);
     }
 
-    // Calculate optimistic new volume with clamping (inside lock for consistency)
-    lock_state();
-    float delta = step_multiplier * s_last_known_volume_step;
-    float predicted_vol = s_last_known_volume + (ticks > 0 ? delta : -delta);
-    if (predicted_vol < s_last_known_volume_min) {
-        predicted_vol = s_last_known_volume_min;
+    bool sent = send_control_json(plan.json);
+    if (!sent &&
+        plan.failure_feedback > BRIDGE_COMMAND_FEEDBACK_NONE &&
+        plan.failure_feedback <= BRIDGE_COMMAND_FEEDBACK_VOLUME_FAILED) {
+        post_ui_message(feedback_text[plan.failure_feedback]);
     }
-    if (predicted_vol > s_last_known_volume_max) {
-        predicted_vol = s_last_known_volume_max;
-    }
-
-    // Update cached volume immediately for next rotation (optimistic tracking)
-    s_last_known_volume = predicted_vol;
-
-    // Send volume request to Roon (absolute value for exact match with optimistic UI)
-    char body[256];
-    snprintf(body, sizeof(body), "{\"zone_id\":\"%s\",\"action\":\"vol_abs\",\"value\":%.1f}",
-        s_state.cfg.zone_id, predicted_vol);
-    unlock_state();
-
-    // Show volume overlay immediately with predicted value (optimistic UI)
-    controller_presentation_show_volume_change(predicted_vol, s_last_known_volume_step);
-
-    if (!send_control_json(body)) {
-        post_ui_message("Volume change failed");
-    }
+    return sent;
 }
 
 void bridge_client_set_network_ready(bool ready) {
@@ -1360,6 +1170,22 @@ bool bridge_client_get_current_zone_id(char *out, size_t len) {
     return out[0] != '\0';
 }
 
+bool bridge_client_visit_zones(bridge_zone_list_visitor_t visitor, void *ctx) {
+    if (!visitor) {
+        return false;
+    }
+
+    /*
+     * The zone storage is borrowed only for the duration of this synchronous
+     * callback. The visitor must copy anything it retains and must not call
+     * bridge_client APIs while the state lock is held.
+     */
+    lock_state();
+    visitor(s_state.zones, s_state.zone_count, s_state.cfg.zone_id, ctx);
+    unlock_state();
+    return true;
+}
+
 bool bridge_client_store_local_connectivity(const rk_cfg_t *local_cfg) {
     lock_state();
     bool merged = rk_cfg_copy_local_connectivity(&s_state.cfg, local_cfg);
@@ -1382,18 +1208,16 @@ bool bridge_client_store_bridge_base(const char *bridge_base, bool from_mdns) {
     return saved;
 }
 
-bool bridge_client_set_zone(const char *zone_id) {
+bridge_zone_selection_result_t bridge_client_select_zone_value(
+    const char *zone_id) {
+    bridge_zone_selection_result_t result = {0};
     if (!zone_id || !zone_id[0]) {
-        return false;
+        return result;
     }
-
-    char label_copy[MAX_ZONE_NAME] = {0};
-    bool found = false;
-    bool saved = false;
 
     lock_state();
     for (int i = 0; i < s_state.zone_count; ++i) {
-        struct zone_entry *entry = &s_state.zones[i];
+        bridge_zone_t *entry = &s_state.zones[i];
         if (strcmp(entry->id, zone_id) != 0) {
             continue;
         }
@@ -1404,27 +1228,40 @@ bool bridge_client_set_zone(const char *zone_id) {
         strncpy(s_state.zone_label, entry->name,
                 sizeof(s_state.zone_label) - 1);
         s_state.zone_label[sizeof(s_state.zone_label) - 1] = '\0';
-        strncpy(label_copy, s_state.zone_label, sizeof(label_copy) - 1);
+        rk_strlcpy(result.zone_name, s_state.zone_label,
+                   sizeof(result.zone_name));
         s_state.zone_resolved = true;
+        result.became_operational =
+            s_device_state != DEVICE_STATE_OPERATIONAL;
         s_device_state = DEVICE_STATE_OPERATIONAL;
         s_trigger_poll = true;
         s_force_artwork_refresh = true;
-        saved = persist_state_config_locked();
-        found = true;
+        result.found = true;
+        result.persisted = persist_state_config_locked();
         break;
     }
     unlock_state();
+    return result;
+}
 
-    if (!found) {
+bool bridge_client_set_zone(const char *zone_id) {
+    if (!zone_id || !zone_id[0]) {
+        return false;
+    }
+
+    bridge_zone_selection_result_t result =
+        bridge_client_select_zone_value(zone_id);
+
+    if (!result.found) {
         LOGW("Zone selection: zone id '%s' not found", zone_id);
         return false;
     }
 
-    if (!saved) {
+    if (!result.persisted) {
         LOGW("Zone selection: could not persist zone '%s'", zone_id);
         return false;
     }
-    post_ui_zone_name(label_copy);
+    post_ui_zone_name(result.zone_name);
     post_ui_message("Loading zone...");
     return true;
 }

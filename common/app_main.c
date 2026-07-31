@@ -5,7 +5,7 @@
 #include "platform/platform_storage.h"
 #include "rk_cfg.h"
 #include "bridge_client.h"
-#include "controller_input.h"
+#include "controller_legacy_binding.h"
 
 #include <stdbool.h>
 
@@ -19,7 +19,8 @@ void app_entry(void) {
     }
 
     // Note: mDNS init moved to after WiFi connects (in main_idf.c)
-    controller_input_set_action_handler(bridge_client_handle_input);
-    controller_input_set_rotation_handler(bridge_client_handle_volume_rotation);
+    controller_input_set_action_handler(controller_legacy_binding_handle_action);
+    controller_input_set_rotation_handler(
+        controller_legacy_binding_handle_rotation);
     bridge_client_start(&cfg);
 }
