@@ -170,6 +170,12 @@ static display before provisioning does not prove an active BLE connection is
 the immediate cause. Compare the before/after UI and BLE memory checkpoints,
 then test BLE pairing separately after the UI loop is healthy.
 
+In particular, use the **largest internal block**, not total internal free
+heap, when assessing UI/BLE coexistence. LVGL DMA buffers can fragment the
+internal heap enough to prevent the UI stack from being created even while
+total free memory appears generous; see [Display Subsystem](DISPLAY.md) for
+the concrete Dial failure and acceptance rule.
+
 ## Coexistence verification
 
 ESP32-S3 shares its 2.4 GHz radio between Wi-Fi and BLE. A successful compile

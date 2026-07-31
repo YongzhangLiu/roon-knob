@@ -59,6 +59,27 @@ initialization, and `ui_loop` logs its stack high-water mark. A static screen
 should therefore be investigated as a task/lifecycle or memory problem first,
 not treated as an expected provisioning state.
 
+#### Contiguous-block rule
+
+`heap_caps_get_free_size(MALLOC_CAP_INTERNAL)` is not sufficient evidence that
+a task can be created: FreeRTOS needs one contiguous internal allocation for
+its stack. On Dial, LVGL's two DMA draw buffers left 108,679 bytes free in
+total but only a 31,744-byte largest block. The former 32 KiB UI-stack request
+therefore failed, `app_main()` returned, and the initialized panel stayed
+static because no `ui_loop` existed.
+
+The shipping 16 KiB UI stack fits this post-LVGL allocation state and retains
+headroom over the historical ~5.3 KiB gzip-artwork high-water mark. Any change
+to LVGL buffers, image decoding, or task stack size must verify both:
+
+1. `largest internal block >= requested task stack` at the creation point; and
+2. the UI task's high-water mark during real artwork traffic, not just idle
+   boot.
+
+Treat the absence of `UI loop task started on core 1` as a boot failure. It is
+not a condition that Wi-Fi provisioning, browser erase, or BLE pairing can
+repair.
+
 ### How LVGL Works
 
 LVGL maintains an internal scene graph of widgets. When something changes (text update, animation frame, etc.), LVGL marks affected regions as "dirty". On each frame:
