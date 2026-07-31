@@ -65,6 +65,8 @@ This raises the total LVGL object budget to 96 KiB while returning 32 KiB of
 contiguous internal SRAM to the Bluetooth controller. The display's DMA draw
 buffers and the UI task stack remain internal. Boot telemetry reports LVGL
 total, free, largest-free, utilization, and fragmentation after UI creation.
+See [ESP32-S3 Memory Architecture](MEMORY.md) for initialization order,
+allocator policy, cache-safety constraints, and adaptive-UI lifecycle rules.
 
 #### Contiguous-block rule
 
@@ -97,12 +99,11 @@ adaptive-screen callers can request a smaller schema-specific ceiling with
 `platform_http_get_bounded()`. This prevents an oversized or chunked response
 from consuming unbounded memory.
 
-The bridge also installs a fixed PSRAM allocator for cJSON before its worker
-starts. Its parse-tree nodes, queued media/connectivity snapshots, copied UI
-strings, and deferred configuration snapshots therefore bypass
-`CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL`; their small allocation sizes no longer
-quietly prefer internal SRAM. The cJSON hooks are process-global and must be
-installed once, never switched while trees may be live.
+The bridge also installs a fixed PSRAM allocator for cJSON and its queued UI
+payloads. This matters because the global 16 KiB threshold would otherwise
+make those many small allocations prefer internal SRAM. The hooks and their
+process-global lifetime are documented in [ESP32-S3 Memory
+Architecture](MEMORY.md).
 
 Only the active screen should be materialized as LVGL objects. Fetch, parse,
 materialize, then release or evict inactive payloads rather than retaining an

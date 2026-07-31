@@ -65,18 +65,22 @@ static void log_memory(const char *stage) {
 
 static bool add_lvgl_psram_pool(void) {
     s_lvgl_psram_pool_memory =
-        heap_caps_malloc(LVGL_PSRAM_POOL_SIZE,
-                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        heap_caps_aligned_alloc(16, LVGL_PSRAM_POOL_SIZE,
+                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_lvgl_psram_pool_memory) {
         ESP_LOGE(TAG, "Could not allocate %u-byte LVGL PSRAM pool",
                  (unsigned)LVGL_PSRAM_POOL_SIZE);
         return false;
     }
 
+    ESP_LOGI(TAG, "Allocated LVGL PSRAM pool backing at %p (%u bytes)",
+             s_lvgl_psram_pool_memory, (unsigned)LVGL_PSRAM_POOL_SIZE);
+
     s_lvgl_psram_pool =
         lv_mem_add_pool(s_lvgl_psram_pool_memory, LVGL_PSRAM_POOL_SIZE);
     if (!s_lvgl_psram_pool) {
-        ESP_LOGE(TAG, "Could not register LVGL PSRAM pool");
+        ESP_LOGE(TAG, "Could not register LVGL PSRAM pool at %p (%u bytes)",
+                 s_lvgl_psram_pool_memory, (unsigned)LVGL_PSRAM_POOL_SIZE);
         heap_caps_free(s_lvgl_psram_pool_memory);
         s_lvgl_psram_pool_memory = NULL;
         return false;

@@ -131,6 +131,9 @@ real implementation.
 Dial shares internal RAM and radio time between an LVGL/QSPI display, Wi-Fi,
 and NimBLE. The shipping profile is intentionally narrow:
 
+The cross-subsystem allocation rules are centralized in [ESP32-S3 Memory
+Architecture](MEMORY.md); this section records the BLE-specific budget.
+
 | Resource | Production setting | Reason |
 | --- | --- | --- |
 | Active connections | 1 | One paired media remote is the product requirement. |
