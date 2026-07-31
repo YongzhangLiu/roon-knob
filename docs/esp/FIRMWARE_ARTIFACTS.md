@@ -37,10 +37,12 @@ run ID, and attempt. The deployment job:
 5. edits the single `Firmware Previews` GitHub Actions comment on the PR with
    Dial, Frame, combined-page, manifest, binary, SHA-256, and size links.
 
-The comment is deliberately updated rather than duplicated. Its timestamp and
-embedded run ID identify the current preview. A build job completing is not
-enough: wait for the dependent **Deploy PR Preview** job to finish before
-expecting the flasher URL to change.
+The comment is deliberately updated rather than duplicated. It leads with the
+UTC build timestamp, linked Actions run and attempt, PR-head SHA, and commit
+subject. The flash page repeats that metadata, including the merge ref used to
+build the artifact. A build job completing is not enough: wait for the
+dependent **Deploy PR Preview** job to finish before expecting the flasher URL
+to change.
 
 ## Release gate
 

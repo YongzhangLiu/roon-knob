@@ -667,12 +667,34 @@ jobs:
           name: hiphi-frame-firmware
           path: frame-artifacts
 
+      - name: Read preview commit metadata
+        id: preview-commit
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { data: commit } = await github.rest.repos.getCommit({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: context.payload.pull_request.head.sha,
+            });
+            core.setOutput('subject', commit.commit.message.split(/\r?\n/, 1)[0]);
+
       - name: Prepare PR preview content
         env:
           PR_NUM: ${{ github.event.pull_request.number }}
           PREVIEW_ID: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          PREVIEW_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PREVIEW_MERGE_SHA: ${{ github.sha }}
+          PREVIEW_COMMIT_SUBJECT: ${{ steps.preview-commit.outputs.subject }}
+          PREVIEW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           mkdir -p pr-preview
+          PREVIEW_CREATED_AT="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          PREVIEW_HEAD_SHA_SHORT="${PREVIEW_HEAD_SHA:0:12}"
+          PREVIEW_MERGE_SHA_SHORT="${PREVIEW_MERGE_SHA:0:12}"
+          # The subject is rendered with textContent in the page, so a commit
+          # message can never become page markup.
+          PREVIEW_SUBJECT_B64="$(printf '%s' "${PREVIEW_COMMIT_SUBJECT}" | base64 --wrap=0)"
           DIAL_MANIFEST_FILE="manifest-s3-${PREVIEW_ID}.json"
           FRAME_MANIFEST_FILE="manifest-frame-${PREVIEW_ID}.json"
           DIAL_APPLICATION_FILE="hiphi_dial-${PREVIEW_ID}.bin"
@@ -766,6 +788,14 @@ jobs:
             sed \
               -e "s/{{PR_NUMBER}}/${PR_NUM}/g" \
               -e "s/{{TARGET_FILTER}}/${TARGET_FILTER}/g" \
+              -e "s/{{PREVIEW_CREATED_AT}}/${PREVIEW_CREATED_AT}/g" \
+              -e "s/{{PREVIEW_HEAD_SHA}}/${PREVIEW_HEAD_SHA}/g" \
+              -e "s/{{PREVIEW_HEAD_SHA_SHORT}}/${PREVIEW_HEAD_SHA_SHORT}/g" \
+              -e "s/{{PREVIEW_MERGE_SHA_SHORT}}/${PREVIEW_MERGE_SHA_SHORT}/g" \
+              -e "s|{{PREVIEW_RUN_URL}}|${PREVIEW_RUN_URL}|g" \
+              -e "s/{{PREVIEW_RUN_ID}}/${GITHUB_RUN_ID}/g" \
+              -e "s/{{PREVIEW_RUN_ATTEMPT}}/${GITHUB_RUN_ATTEMPT}/g" \
+              -e "s|{{PREVIEW_SUBJECT_B64}}|${PREVIEW_SUBJECT_B64}|g" \
               -e "s|manifest-s3.json|${DIAL_MANIFEST_FILE}|g" \
               -e "s|manifest-frame.json|${FRAME_MANIFEST_FILE}|g" \
               web/flash-pr.html > "pr-preview/${TARGET_PAGE}"
@@ -923,6 +953,11 @@ jobs:
           FRAME_FIRMWARE_SHA256: ${{ steps.verify-preview.outputs.frame_firmware_sha256 }}
           DIAL_FIRMWARE_BYTES: ${{ steps.verify-preview.outputs.dial_firmware_bytes }}
           FRAME_FIRMWARE_BYTES: ${{ steps.verify-preview.outputs.frame_firmware_bytes }}
+          PREVIEW_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PREVIEW_COMMIT_SUBJECT: ${{ steps.preview-commit.outputs.subject }}
+          PREVIEW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PREVIEW_RUN_ID: ${{ github.run_id }}
+          PREVIEW_RUN_ATTEMPT: ${{ github.run_attempt }}
         with:
           script: |
             const prNumber = context.payload.pull_request.number;
@@ -934,6 +969,10 @@ jobs:
             const frameManifestUrl = process.env.FRAME_MANIFEST_URL;
             const dialFirmwareUrl = process.env.DIAL_FIRMWARE_URL;
             const frameFirmwareUrl = process.env.FRAME_FIRMWARE_URL;
+            const headSha = process.env.PREVIEW_HEAD_SHA;
+            const headShaShort = headSha.slice(0, 12);
+            const commitUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/commit/${headSha}`;
+            const builtAt = new Date().toISOString();
 
             // Check if we already posted a comment
             const comments = await github.rest.issues.listComments({
@@ -943,10 +982,18 @@ jobs:
             });
 
             const botComment = comments.data.find(c =>
-              c.user.type === 'Bot' && c.body.includes('Firmware Preview')
+              c.user.type === 'Bot' &&
+              (c.body.includes('<!-- firmware-preview -->') ||
+               c.body.includes('Firmware Preview'))
             );
 
-            const body = `### Firmware Previews
+            const body = `<!-- firmware-preview -->
+            ### Current firmware preview
+
+            **Built:** ${builtAt}<br>
+            **Run:** [#${process.env.PREVIEW_RUN_ID}](${process.env.PREVIEW_RUN_URL}) (attempt ${process.env.PREVIEW_RUN_ATTEMPT})<br>
+            **PR head:** [\`${headShaShort}\`](${commitUrl})<br>
+            **Commit:** ${process.env.PREVIEW_COMMIT_SUBJECT}
 
             - [Flash HiPhi Dial](${dialUrl})
             - [Flash HiPhi Frame](${frameUrl})
