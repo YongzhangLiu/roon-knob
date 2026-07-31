@@ -99,10 +99,12 @@ CONFIG_BT_NIMBLE_SM_SC=y
 CONFIG_BT_NIMBLE_HID_SERVICE=y
 ```
 
-Targets that intentionally exclude Bluetooth depend on the
-`rk_ble_hid_host_stub` component instead of `rk_ble_hid_host`. The stub exposes
-the same stable API and reports `UNAVAILABLE`; because the real component is not
-in that target's dependency graph, NimBLE and `esp_hid` are not compiled. CI
+Targets that intentionally exclude Bluetooth depend on a stub component instead
+of `rk_ble_hid_host`. The stub exposes the same stable API and reports
+`UNAVAILABLE`; NimBLE and `esp_hid` are not compiled. The stub component wrapper
+is kept under `rk_ble_hid_host/optional/`, outside the production top-level
+component-discovery set, so it cannot silently win link-order resolution in a
+Bluetooth-enabled artifact. Targets opt into that directory explicitly. CI
 builds an ESP32-S3 fixture for this profile.
 
 ## Coexistence verification

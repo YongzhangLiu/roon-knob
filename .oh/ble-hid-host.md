@@ -294,3 +294,94 @@ Proceed to execute only with:
 Implement the shared serialized service and pure tests first. Frame and Dial
 adapters follow as separate commits. PR #216 remains frozen for its hardware
 test.
+
+## Hardware rejection and linker correction
+
+**Updated:** 2026-07-31
+**Integrated test branch:** `codex/issue-190-provisioning-config` / PR #222
+**Rejected artifact:** head `a5e73e0`, Actions run `30636774513`
+
+Physical Dial testing reached the BLE settings page but reported
+`Unavailable — UNAVAILABLE`. This was not a device setting. Both production
+link maps resolved `rk_ble_hid_host_init` from the disabled stub even though
+their effective configs enabled the real host.
+
+The cause was two top-level components exporting the same public API. ESP-IDF
+auto-discovered both `rk_ble_hid_host` and `rk_ble_hid_host_stub`; unresolved
+calls from the target main archive bound to the later stub archive. Existing CI
+proved only that Kconfig enabled BLE and that the real source compiled, neither
+of which proved which implementation the final ELF selected.
+
+### Execute correction
+
+- Remove the stub wrapper from the production top-level component-discovery
+  directory.
+- Keep the optional stub wrapper nested under
+  `rk_ble_hid_host/optional/rk_ble_hid_host_stub`; BLE-excluding targets must
+  opt into that directory explicitly.
+- Keep Dial and Frame dependent on the real component.
+- Make CI assert the exact `rk_ble_hid_host_init` provider in each final map,
+  reject any stub object in production compile/map inputs, and assert the
+  inverse for the ESP32-S3 BLE-off fixture.
+- Preserve all runtime defaults and NVS behavior: Dial remains opt-in but must
+  start in `DISABLED`, never `UNAVAILABLE`; Frame remains default-on.
+
+### Verification
+
+- Dial ESP-IDF 5.5.5 PERF build: PASS, `0x1fb1f0`, 21% app partition free.
+- Frame ESP-IDF 5.5.5 PERF build: PASS, `0x146400`, 68% app partition free.
+- ESP32-S3 BLE-off minimal build: PASS without NimBLE or `esp_hid`.
+- Dial/Frame maps: exact `rk_ble_hid_host_init` provider is
+  `librk_ble_hid_host.a(rk_ble_hid_host.c.obj)` and no stub is present.
+- BLE-off map: exact provider is
+  `librk_ble_hid_host_stub.a(rk_ble_hid_host_stub.c.obj)` and no real host is
+  present.
+- HID report, policy, and stub tests: PASS.
+- Dial identity, controller dependency policy, and negative fixture: PASS.
+
+## Execute review
+
+**Aim:** Ship the shared BLE media-remote host in Dial and Frame rather than an
+API-compatible disabled stub.
+**Status:** CONTINUE to replacement hardware candidate; not merge/release.
+
+- Necessary: yes — the physically observed Dial behavior contradicted the
+  program and #191 contract.
+- Aligned: yes — this changes build selection only; it does not add another BLE
+  role, schema, UI, or migration.
+- Sufficient: yes for the linker defect — the exact final symbol provider is
+  now asserted for both production and disabled artifacts.
+- Mechanism clear: yes — only one public API provider is discoverable in each
+  target's component graph.
+- Complete: automated/build proof is complete; real-host coexistence remains a
+  hardware gate.
+
+Terra review found no blocker and requested exact symbol/provider matching
+rather than a generic object-name grep. The CI checks were hardened accordingly.
+
+## Execute dissent
+
+**Decision under review:** Publish the rebuilt #222 Dial/Frame artifacts as
+replacement hardware-test candidates.
+**Recommendation:** ADJUST — publish for testing, do not merge or release.
+
+### Contrary evidence and pre-mortem
+
+1. The previous binaries were smaller because the real host was dead code;
+   turning it on adds NimBLE/HID code, service stacks, and internal-memory load.
+2. Successful compilation and exact map attribution do not prove Wi-Fi/BLE
+   coexistence, repeated lifecycle transitions, or callback/task safety.
+3. A Dial that leaves `UNAVAILABLE` but resets during enable/scan would still
+   fail the user outcome.
+
+### Required hardware evidence
+
+- Dial cold boot reaches `Disabled`, then enable → ready, scan, pair, media-key
+  control, reconnect, disable/re-enable, and forget/reboot all work.
+- Bridge polling, artwork, settings UI, OTA check, and Wi-Fi recovery remain
+  stable while BLE is active; record heap and relevant task stack watermarks.
+- Frame separately proves default-on startup, scan/pair/reconnect, keys, e-ink
+  UI ownership, and Wi-Fi recovery.
+
+Only exact replacement artifacts may satisfy these gates. Green CI is delivery
+integrity evidence, not hardware acceptance.
