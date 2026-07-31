@@ -516,7 +516,7 @@ static void build_layout(void) {
     lv_obj_add_style(next_label, &style_button_label, 0);
     lv_obj_center(next_label);
 
-    // Status bar at bottom - for transient messages like "Bridge: Connected"
+    // Status bar at bottom - for transient messages like "Hi-Fi Control: Connected"
     s_status_bar = lv_label_create(s_ui_container);
     lv_label_set_text(s_status_bar, "");
     lv_obj_set_width(s_status_bar, SCREEN_SIZE - 60);

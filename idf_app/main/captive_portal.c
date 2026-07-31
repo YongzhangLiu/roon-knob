@@ -141,8 +141,10 @@ static const char *HTML_FORM =
     "<input type='submit' value='Connect'>"
     "</form>"
     "<div class='note'>"
-    "<strong>Note:</strong> To use this with Roon, you'll need to set up the Roon Bridge. "
-    "See <a href='https://github.com/muness/roon-knob' target='_blank'>github.com/muness/roon-knob</a> for details."
+    "<strong>Note:</strong> HiPhi Dial requires Unified Hi-Fi Control on your network. "
+    "It supports Roon, LMS, and OpenHome. See "
+    "<a href='https://github.com/open-horizon-labs/unified-hifi-control' "
+    "target='_blank'>Unified Hi-Fi Control setup</a>."
     "</div>"
     "</body></html>";
 

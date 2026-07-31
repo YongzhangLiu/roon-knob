@@ -225,7 +225,7 @@ static void test_bridge_cb(lv_event_t *e) {
     const rk_cfg_t *cfg = &snapshot.value;
 
     if (cfg->bridge_base[0] == '\0') {
-        set_status_text("No bridge URL");
+        set_status_text("No Hi-Fi Control URL");
         return;
     }
 
@@ -240,10 +240,10 @@ static void test_bridge_cb(lv_event_t *e) {
     platform_http_free(response);
 
     if (result == 0 && response_len > 0) {
-        set_status_text("Bridge OK!");
+        set_status_text("Hi-Fi Control OK!");
         ESP_LOGI(TAG, "Bridge test passed: %s", cfg->bridge_base);
     } else {
-        set_status_text("Bridge FAILED");
+        set_status_text("Hi-Fi Control FAILED");
         ESP_LOGW(TAG, "Bridge test failed: %s (error %d)", cfg->bridge_base, result);
     }
 }
@@ -367,7 +367,7 @@ static void ensure_panel(void) {
     lv_obj_set_flex_flow(bridge_row, LV_FLEX_FLOW_ROW);
     lv_obj_set_style_pad_all(bridge_row, 4, 0);
     lv_obj_clear_flag(bridge_row, LV_OBJ_FLAG_SCROLLABLE);
-    lv_label_set_text(lv_label_create(bridge_row), "Bridge:");
+    lv_label_set_text(lv_label_create(bridge_row), "Hi-Fi Control:");
     s_widgets.bridge_value = lv_label_create(bridge_row);
     lv_obj_set_width(s_widgets.bridge_value, 120);  // Constrain width to enable scroll
     lv_label_set_long_mode(s_widgets.bridge_value, LV_LABEL_LONG_SCROLL_CIRCULAR);
@@ -387,7 +387,7 @@ static void ensure_panel(void) {
     lv_label_set_text(s_widgets.status_label, "Wi-Fi idle");
 
     create_button(s_widgets.panel, "Check for Update", check_update_cb);
-    create_button(s_widgets.panel, "Test Bridge", test_bridge_cb);
+    create_button(s_widgets.panel, "Test Hi-Fi Control", test_bridge_cb);
     create_button(s_widgets.panel, "Factory Reset", factory_reset_cb);
     create_button(s_widgets.panel, "Back", hide_panel_cb);
 }

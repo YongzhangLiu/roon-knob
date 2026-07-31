@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <cJSON.h>
 
 // Forward declarations for config handling
@@ -91,10 +92,11 @@ struct bridge_state {
 
 static struct bridge_state s_state;
 static os_mutex_t s_state_lock = OS_MUTEX_INITIALIZER;
-static bool s_running;
+static atomic_bool s_running = ATOMIC_VAR_INIT(false);
+static atomic_uint s_worker_start_attempts = ATOMIC_VAR_INIT(0);
 static bool s_trigger_poll;
 static bool s_last_net_ok;
-static bool s_network_ready;
+static atomic_bool s_network_ready = ATOMIC_VAR_INIT(false);
 static device_state_t s_device_state = DEVICE_STATE_BOOT;  // Initial state
 static bool s_force_artwork_refresh;  // Force artwork reload on zone change
 static float s_last_known_volume = 0.0f;   // Cached volume for optimistic UI updates
@@ -112,6 +114,10 @@ static char s_last_zones_sha[9] = {0};     // Track zones SHA for zone list chan
 // Bridge connection retry tracking (mirrors WiFi retry pattern)
 #define BRIDGE_FAIL_THRESHOLD 5  // Show recovery info after this many consecutive failures
 #define MDNS_FAIL_THRESHOLD 10   // Show recovery info after this many mDNS failures (~30s)
+#define BRIDGE_POLL_TASK_STACK_SIZE 16384
+#define BRIDGE_POLL_TASK_START_ATTEMPTS 2
+_Static_assert(BRIDGE_POLL_TASK_STACK_SIZE >= 16384,
+               "bridge worker stack budget must cover endpoint persistence");
 static int s_bridge_fail_count = 0;
 static int s_mdns_fail_count = 0;
 static char s_device_ip[16] = {0};  // Device IP for recovery messages
@@ -122,6 +128,57 @@ static char s_device_ip[16] = {0};  // Device IP for recovery messages
 #endif
 
 static void strip_trailing_slashes(char *url);
+static void bridge_poll_thread(void *arg);
+static void post_ui_connectivity_update(const char *line1, const char *line2);
+static void post_ui_network_status(const char *status);
+
+static bool start_bridge_poll_task(void) {
+    bool expected = false;
+    if (!atomic_compare_exchange_strong_explicit(
+            &s_running, &expected, true,
+            memory_order_acq_rel, memory_order_acquire)) {
+        return true;
+    }
+
+    unsigned attempt = atomic_fetch_add_explicit(
+                           &s_worker_start_attempts, 1,
+                           memory_order_relaxed) + 1;
+    if (attempt > BRIDGE_POLL_TASK_START_ATTEMPTS) {
+        atomic_store_explicit(&s_running, false, memory_order_release);
+        return false;
+    }
+
+    size_t heap_before = platform_task_internal_heap_free_bytes();
+    size_t largest_before =
+        platform_task_internal_heap_largest_free_block_bytes();
+    if (heap_before != SIZE_MAX && largest_before != SIZE_MAX) {
+        LOGI("Bridge worker internal heap before start: free=%zu largest=%zu",
+             heap_before, largest_before);
+    }
+    if (platform_task_start_configured("bridge_poll",
+                                       BRIDGE_POLL_TASK_STACK_SIZE,
+                                       bridge_poll_thread, NULL) == 0) {
+        size_t heap_after = platform_task_internal_heap_free_bytes();
+        size_t largest_after =
+            platform_task_internal_heap_largest_free_block_bytes();
+        if (heap_after != SIZE_MAX && largest_after != SIZE_MAX) {
+            LOGI("Bridge worker internal heap after start: free=%zu largest=%zu",
+                 heap_after, largest_after);
+        }
+        return true;
+    }
+    atomic_store_explicit(&s_running, false, memory_order_release);
+    LOGE("Could not start Unified Hi-Fi Control polling task (attempt %u/%u)",
+         attempt, BRIDGE_POLL_TASK_START_ATTEMPTS);
+    if (attempt < BRIDGE_POLL_TASK_START_ATTEMPTS) {
+        post_ui_network_status("Hi-Fi Control startup delayed");
+    } else {
+        post_ui_connectivity_update("Restart device",
+                                    "Hi-Fi Control unavailable");
+        post_ui_network_status("Hi-Fi Control unavailable - restart device");
+    }
+    return false;
+}
 
 static void lock_state(void) {
     os_mutex_lock(&s_state_lock);
@@ -442,7 +499,7 @@ static void wait_for_poll_interval(void) {
         delay_ms = POLL_DELAY_AWAKE_BATTERY_MS;   // Slower on battery to save power
     }
     uint64_t start = platform_millis();
-    while (s_running) {
+    while (atomic_load_explicit(&s_running, memory_order_acquire)) {
         if (s_trigger_poll) {
             s_trigger_poll = false;
             break;
@@ -484,11 +541,30 @@ static void maybe_update_bridge_base(void) {
         // The endpoint must still be clear when this asynchronous lookup
         // completes. A manual set/clear advances the token and wins.
         LOGI("mDNS discovered bridge: %s", discovered);
+        size_t stack_free_before_commit =
+            platform_task_current_stack_free_bytes();
+        if (stack_free_before_commit != SIZE_MAX) {
+            LOGI("Bridge worker stack high-water free before endpoint commit: %zu bytes",
+                 stack_free_before_commit);
+        }
         strip_trailing_slashes(discovered);
         controller_config_snapshot_t committed;
         controller_config_write_result_t result =
             controller_config_set_endpoint_if_current(
                 &token, discovered, true, true, &committed);
+        size_t stack_free_after_commit =
+            platform_task_current_stack_free_bytes();
+        if (stack_free_after_commit != SIZE_MAX) {
+            LOGI("Bridge worker stack high-water free after endpoint commit: %zu bytes",
+                 stack_free_after_commit);
+        }
+        size_t heap_after_commit = platform_task_internal_heap_free_bytes();
+        size_t largest_after_commit =
+            platform_task_internal_heap_largest_free_block_bytes();
+        if (heap_after_commit != SIZE_MAX && largest_after_commit != SIZE_MAX) {
+            LOGI("Bridge worker internal heap after endpoint commit: free=%zu largest=%zu",
+                 heap_after_commit, largest_after_commit);
+        }
         if (result == CONTROLLER_CONFIG_NOT_COMMITTED) {
             LOGI("Ignoring stale mDNS bridge result");
             return;
@@ -502,7 +578,7 @@ static void maybe_update_bridge_base(void) {
         if (committed.value.bridge_base[0] == '\0') {
             LOGW("Could not persist discovered bridge");
         }
-        post_ui_message("Bridge: Found");
+        post_ui_message("Hi-Fi Control: Found");
         return;
     }
 
@@ -876,10 +952,10 @@ static void bridge_poll_thread(void *arg) {
     LOGI("Bridge poll thread started");
     struct now_playing_state state;
     default_now_playing(&state);
-    while (s_running) {
+    while (atomic_load_explicit(&s_running, memory_order_acquire)) {
         // Skip HTTP requests if network is not ready yet (or in BLE mode)
         // In BLE mode, s_network_ready is false, so we just sleep without logging
-        if (!s_network_ready) {
+        if (!atomic_load_explicit(&s_network_ready, memory_order_acquire)) {
             wait_for_poll_interval();
             continue;
         }
@@ -922,7 +998,7 @@ static void bridge_poll_thread(void *arg) {
             if (!s_last_net_ok) {
                 // Just connected - clear status, restore zone name, mark verified
                 reset_bridge_fail_count();
-                post_ui_message("Bridge: Connected");
+                post_ui_message("Hi-Fi Control: Connected");
                 post_ui_network_status("");
                 s_bridge_verified = true;
                 // Restore zone name (was cleared during error display)
@@ -944,8 +1020,8 @@ static void bridge_poll_thread(void *arg) {
             snprintf(line1_msg, sizeof(line1_msg), "Attempt %d of %d...",
                      s_bridge_fail_count, BRIDGE_FAIL_THRESHOLD);
             post_ui_zone_name("");  // Clear zone name to avoid overlay
-            post_ui_connectivity_update(line1_msg, "Testing Bridge");
-            post_ui_network_status("Bridge: Offline - retrying...");
+            post_ui_connectivity_update(line1_msg, "Testing Hi-Fi Control");
+            post_ui_network_status("Hi-Fi Control: Offline - retrying...");
         } else if (!ok && !s_last_net_ok) {
             // Still trying to connect - check if we have a bridge URL
             rk_cfg_t cfg;
@@ -965,14 +1041,14 @@ static void bridge_poll_thread(void *arg) {
                     // mDNS search exhausted - show recovery info
                     if (s_device_ip[0]) {
                         snprintf(line1_msg, sizeof(line1_msg), "http://%s", s_device_ip);
-                        snprintf(line2_msg, sizeof(line2_msg), "Set Bridge URL at:");
+                        snprintf(line2_msg, sizeof(line2_msg), "Set Hi-Fi Control at:");
                         snprintf(status_msg, sizeof(status_msg),
-                                 "mDNS failed. Set Bridge at http://%s", s_device_ip);
+                                 "mDNS failed. Set Hi-Fi Control at http://%s", s_device_ip);
                     } else {
                         snprintf(line1_msg, sizeof(line1_msg), "Use zone menu > Settings");
-                        snprintf(line2_msg, sizeof(line2_msg), "Bridge Not Found");
+                        snprintf(line2_msg, sizeof(line2_msg), "Hi-Fi Control Not Found");
                         snprintf(status_msg, sizeof(status_msg),
-                                 "mDNS failed. Configure Bridge in Settings.");
+                                 "mDNS failed. Configure Hi-Fi Control in Settings.");
                     }
                     post_ui_connectivity_update(line1_msg, line2_msg);
                     post_ui_network_status(status_msg);
@@ -980,7 +1056,8 @@ static void bridge_poll_thread(void *arg) {
                     // Still searching - show progress
                     snprintf(line1_msg, sizeof(line1_msg), "Attempt %d of %d...",
                              s_mdns_fail_count + 1, MDNS_FAIL_THRESHOLD);
-                    post_ui_connectivity_update(line1_msg, "Searching for Bridge");
+                    post_ui_connectivity_update(line1_msg,
+                                                "Finding Hi-Fi Control");
                     snprintf(status_msg, sizeof(status_msg), "mDNS: %d/%d",
                              s_mdns_fail_count + 1, MDNS_FAIL_THRESHOLD);
                     post_ui_network_status(status_msg);
@@ -998,14 +1075,14 @@ static void bridge_poll_thread(void *arg) {
                     if (s_device_ip[0]) {
                         snprintf(line1_msg, sizeof(line1_msg),
                                  "http://%s", s_device_ip);
-                        snprintf(line2_msg, sizeof(line2_msg), "Update Bridge at:");
+                        snprintf(line2_msg, sizeof(line2_msg), "Update Hi-Fi Control at:");
                         snprintf(status_msg, sizeof(status_msg),
-                                 "Bridge unreachable after %d attempts", BRIDGE_FAIL_THRESHOLD);
+                                 "Hi-Fi Control unreachable after %d attempts", BRIDGE_FAIL_THRESHOLD);
                     } else {
                         snprintf(line1_msg, sizeof(line1_msg), "Use zone menu > Settings");
-                        snprintf(line2_msg, sizeof(line2_msg), "Bridge Unreachable");
+                        snprintf(line2_msg, sizeof(line2_msg), "Hi-Fi Control Unreachable");
                         snprintf(status_msg, sizeof(status_msg),
-                                 "Bridge unreachable. Check Settings.");
+                                 "Hi-Fi Control unreachable. Check Settings.");
                     }
                     post_ui_zone_name("");  // Clear zone name to avoid overlay
                     post_ui_connectivity_update(line1_msg, line2_msg);
@@ -1016,8 +1093,8 @@ static void bridge_poll_thread(void *arg) {
                     snprintf(line1_msg, sizeof(line1_msg), "Attempt %d of %d...",
                              s_bridge_fail_count, BRIDGE_FAIL_THRESHOLD);
                     post_ui_zone_name("");  // Clear zone name to avoid overlay
-                    post_ui_connectivity_update(line1_msg, "Testing Bridge");
-                    snprintf(status_msg, sizeof(status_msg), "Bridge: Retry %d/%d",
+                    post_ui_connectivity_update(line1_msg, "Testing Hi-Fi Control");
+                    snprintf(status_msg, sizeof(status_msg), "Hi-Fi Control: Retry %d/%d",
                              s_bridge_fail_count, BRIDGE_FAIL_THRESHOLD);
                     post_ui_network_status(status_msg);
                 }
@@ -1053,8 +1130,7 @@ void bridge_client_start(void) {
          cfg.config_sha[0] ? cfg.config_sha : "(none)");
     apply_knob_config(&cfg);
 
-    s_running = true;
-    platform_task_start(bridge_poll_thread, NULL);
+    start_bridge_poll_task();
 }
 
 bool bridge_client_execute_command(const controller_command_t *command) {
@@ -1119,7 +1195,28 @@ bool bridge_client_execute_command(const controller_command_t *command) {
 }
 
 void bridge_client_set_network_ready(bool ready) {
-    s_network_ready = ready;
+    bool was_ready = atomic_exchange_explicit(&s_network_ready, ready,
+                                               memory_order_acq_rel);
+
+    if (ready && !atomic_load_explicit(&s_running, memory_order_acquire)) {
+        unsigned attempts = atomic_load_explicit(&s_worker_start_attempts,
+                                                  memory_order_relaxed);
+        if (!was_ready && attempts < BRIDGE_POLL_TASK_START_ATTEMPTS) {
+            LOGW("Retrying Unified Hi-Fi Control polling task startup");
+            start_bridge_poll_task();
+            attempts = atomic_load_explicit(&s_worker_start_attempts,
+                                            memory_order_relaxed);
+        }
+        if (!atomic_load_explicit(&s_running, memory_order_acquire)) {
+            LOGE("Unified Hi-Fi Control polling unavailable after %u attempt(s)",
+                 attempts);
+            post_ui_connectivity_update("Restart device",
+                                        "Hi-Fi Control unavailable");
+            post_ui_network_status(
+                "Hi-Fi Control unavailable - restart device");
+            return;
+        }
+    }
 
     const char *network_status;
     lock_state();

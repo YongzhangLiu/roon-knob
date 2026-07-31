@@ -459,9 +459,10 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
     "<input type='submit' value='Connect'>"
     "</form>"
     "<div class='note'>"
-    "<strong>Note:</strong> hiphi frame needs a running bridge service on your network. "
-    "See <a href='https://github.com/muness/roon-knob' "
-    "target='_blank'>github.com/muness/roon-knob</a> for details."
+    "<strong>Note:</strong> HiPhi Frame requires Unified Hi-Fi Control on your network. "
+    "It supports Roon, LMS, and OpenHome. See "
+    "<a href='https://github.com/open-horizon-labs/unified-hifi-control' "
+    "target='_blank'>Unified Hi-Fi Control setup</a>."
     "</div></body></html>",
     FAVICON_LINK,
     cfg->wifi_count > 0 ? "<h2>Saved Networks</h2><div class='section'>" : "",
@@ -722,13 +723,13 @@ static esp_err_t sta_zones_handler(httpd_req_t *req) {
     FAVICON_LINK,
     esc_bridge_url[0] ? "<a href='" : "",
     esc_bridge_url[0] ? esc_bridge_url : "",
-    esc_bridge_url[0] ? "' target='_blank'>Bridge Control</a>" : "");
+    esc_bridge_url[0] ? "' target='_blank'>Unified Hi-Fi Control</a>" : "");
   if (pos >= (int)html_size) pos = (int)html_size - 1;
 
   if (count == 0) {
     pos += snprintf(html + pos, html_size - pos,
       "<p class='status'>No zones discovered yet. "
-      "Make sure the bridge is running and music is playing.</p>");
+      "Make sure Unified Hi-Fi Control is running and music is playing.</p>");
     if (pos >= (int)html_size) pos = (int)html_size - 1;
   } else {
     for (int i = 0; i < count; i++) {
@@ -846,7 +847,7 @@ static esp_err_t sta_ble_handler(httpd_req_t *req) {
     FAVICON_LINK,
     esc_bridge_url[0] ? "<a href='" : "",
     esc_bridge_url[0] ? esc_bridge_url : "",
-    esc_bridge_url[0] ? "' target='_blank'>Bridge Control</a>" : "");
+    esc_bridge_url[0] ? "' target='_blank'>Unified Hi-Fi Control</a>" : "");
   if (pos >= (int)html_size) pos = (int)html_size - 1;
 
   pos += snprintf(html + pos, html_size - pos,

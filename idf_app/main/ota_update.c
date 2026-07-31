@@ -71,9 +71,10 @@ static void check_update_task(void *arg) {
     strncpy(s_ota_info.current_version, ota_get_current_version(), sizeof(s_ota_info.current_version) - 1);
 
     if (!get_bridge_url(bridge_url, sizeof(bridge_url))) {
-        ESP_LOGE(TAG, "No bridge URL configured");
+        ESP_LOGE(TAG, "No Unified Hi-Fi Control URL configured");
         s_ota_info.status = OTA_STATUS_ERROR;
-        strncpy(s_ota_info.error_msg, "No bridge configured", sizeof(s_ota_info.error_msg));
+        strncpy(s_ota_info.error_msg, "No Hi-Fi Control configured",
+                sizeof(s_ota_info.error_msg));
         s_ota_task = NULL;
         vTaskDelete(NULL);
         return;
@@ -197,7 +198,8 @@ static void do_update_task(void *arg) {
 
     if (!get_bridge_url(bridge_url, sizeof(bridge_url))) {
         s_ota_info.status = OTA_STATUS_ERROR;
-        strncpy(s_ota_info.error_msg, "No bridge configured", sizeof(s_ota_info.error_msg));
+        strncpy(s_ota_info.error_msg, "No Hi-Fi Control configured",
+                sizeof(s_ota_info.error_msg));
         s_ota_task = NULL;
         vTaskDelete(NULL);
         return;

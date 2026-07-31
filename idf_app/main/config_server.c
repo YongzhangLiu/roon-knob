@@ -81,7 +81,7 @@ static const char *HTML_CONFIG =
     "<p class='info'>Configure your HiPhi Dial settings</p>"
     "<p><a href='/ble'>BLE Media Remote settings</a></p>"
     "<div class='current'>"
-    "<strong>Current Bridge:</strong> %s"
+    "<strong>Current Unified Hi-Fi Control:</strong> %s"
     "</div>"
     "<div class='status %s'>"
     "<strong>Status:</strong> %s"
@@ -99,8 +99,8 @@ static const char *HTML_CONFIG =
     "<input type='submit' value='Add Network'>"
     "</form>"
     "<form method='POST' action='/config'>"
-    "<h2>Bridge Override</h2>"
-    "<label>Bridge URL</label>"
+    "<h2>Unified Hi-Fi Control Override</h2>"
+    "<label>Unified Hi-Fi Control URL</label>"
     "<input type='url' name='bridge' maxlength='128' placeholder='http://192.168.1.x:8088' value='%s'>"
     "<p class='hint'>Leave empty for mDNS auto-discovery. Check the HiPhi Dial display for connection progress.</p>"
     "<input type='submit' value='Save'>"
@@ -284,7 +284,8 @@ static esp_err_t config_get_handler(httpd_req_t *req) {
         snprintf(status_text, sizeof(status_text), "Searching via mDNS...");
     } else if (retry_count >= retry_max) {
         status_class = "status-err";
-        snprintf(status_text, sizeof(status_text), "Unreachable - check URL or bridge server");
+        snprintf(status_text, sizeof(status_text),
+                 "Unreachable - check Unified Hi-Fi Control");
     } else if (retry_count > 0) {
         status_class = "status-warn";
         snprintf(status_text, sizeof(status_text), "Connecting... (%d/%d)", retry_count, retry_max);
@@ -352,7 +353,7 @@ static esp_err_t config_post_handler(httpd_req_t *req) {
     const char *message;
     char bridge_base[129] = {0};
     if (strcmp(action, "Clear") == 0) {
-        message = "Bridge cleared! Will use mDNS.";
+        message = "Unified Hi-Fi Control cleared! Will use mDNS.";
         ESP_LOGI(TAG, "Bridge URL cleared");
     } else {
         char bridge[129] = {0};
@@ -372,7 +373,8 @@ static esp_err_t config_post_handler(httpd_req_t *req) {
             resolve_local_in_url(bridge_base, sizeof(bridge_base));
         }
 
-        message = bridge_base[0] ? "Bridge URL saved!" : "Bridge cleared! Will use mDNS.";
+        message = bridge_base[0] ? "Unified Hi-Fi Control URL saved!"
+                                 : "Unified Hi-Fi Control cleared! Will use mDNS.";
         ESP_LOGI(TAG, "Bridge URL set to: %s", bridge_base[0] ? bridge_base : "(mDNS)");
     }
 

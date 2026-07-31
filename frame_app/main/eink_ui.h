@@ -10,7 +10,7 @@ void eink_ui_init(void);
 // Called when bridge status changes (online/offline)
 void eink_ui_set_status(bool online);
 
-// Show a message (e.g., "Bridge: Connected", "WiFi: Connecting...")
+// Show a message (e.g., "Hi-Fi Control: Connected", "WiFi: Connecting...")
 void eink_ui_set_message(const char *msg);
 
 // Update zone name in header

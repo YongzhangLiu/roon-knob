@@ -888,3 +888,36 @@ Neither is a merge or release verdict.
    media-remote pairing/control, and Wi-Fi/BLE coexistence.
 5. Re-run review/dissent on exact-artifact evidence before marking #222 or the
    stacked program ready to merge/release.
+
+## Exact-artifact rejection and bridge-worker correction
+
+**Updated:** 2026-07-31
+
+The replacement artifact from workflow run `30628409974` is **rejected**. On a
+physical HiPhi Dial it successfully discovered Unified Hi-Fi Control through
+the legacy compatibility mDNS service at `http://NAS2:8088`, then overflowed
+the generic 8192-byte polling task while persisting the discovered endpoint.
+The artifact rebooted with ELF SHA `8262b6eac`; discovery naming was therefore
+not the failure.
+
+Static optimized frame evidence places roughly 6640 bytes in the application
+call chain from polling through endpoint mutation/commit before ESP-IDF NVS and
+logging callees. The immediate correction:
+
+- gives the polling worker the explicit `bridge_poll` name and a 16384-byte
+  internal stack;
+- uses an atomic single-owner start, allowing at most two starts per boot and
+  retrying only on the first network false-to-true transition;
+- exposes final allocation failure in the UI instead of claiming zones load;
+- logs internal free heap/largest block before and after task creation and
+  after endpoint persistence;
+- logs the worker's lifetime stack high-water free bytes around persistence;
+- retains the legacy compatibility mDNS identifier, endpoint paths, NVS fields,
+  and protocol behavior;
+- updates user-facing setup/status copy to Unified Hi-Fi Control (shortened to
+  Hi-Fi Control only where device display space is constrained).
+
+Native owner/input contracts, dependency/identity policy, and corrected Docker
+ESP-IDF v5.5.5 PERF builds pass locally. Corrected sizes are Dial `0x1bc500`
+(31% partition free) and Frame `0x107ab0` (74% free). The next pushed preview is
+for exact-artifact hardware evidence, not merge authorization.
