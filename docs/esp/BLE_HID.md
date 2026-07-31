@@ -104,20 +104,26 @@ security procedure.
 
 ### ESP-IDF HID interoperability override
 
-ESP-IDF 5.5.5's NimBLE HID wrapper subscribes to an optional Battery Service
-before it subscribes to the HID input reports. Some media remotes complete
-service discovery and encryption but never answer that battery CCCD write. In
-that state `esp_hidh_dev_open()` remains blocked, the public state correctly
-stays `CONNECTING`, and no media-key report can reach the application.
+The original Frame implementation built against the February 2026
+`release-v5.5` wrapper. ESP-IDF commit `85bee88b27f5` subsequently malformed the
+branch nesting between Device Information and HID characteristic discovery;
+the pinned v5.5.5 wrapper can therefore discover the peer's services without
+constructing a valid HID report list. A later change also made the wrapper read
+and subscribe to an optional Battery Service before subscribing to HID input
+reports. Some media remotes never answer that battery CCCD write. In either
+state `esp_hidh_dev_open()` remains blocked, the public state correctly stays
+`CONNECTING`, and no media-key report can reach the application.
 
 The repository therefore overrides only the pinned `nimble_hidh.c` translation
-unit. It retains the one-shot battery-level read, skips battery notifications,
-and continues with every HID report subscription. The override also clears the
-wrapper's successful-read scratch pointer when ownership moves to its caller;
-otherwise disabling BLE after a read can free the same buffer again during HID
-deinitialization. The patch fails at CMake configuration if the expected
-ESP-IDF 5.5.5 source blocks change, and CI verifies that both production targets
-compile the generated translation unit.
+unit. It restores the pre-regression HID branch structure, resets per-characteristic
+report ownership, bounds report-list traversal, retains the one-shot battery
+read, skips battery notifications, and continues with every HID report
+subscription. The override also clears the wrapper's successful-read scratch
+pointer when ownership moves to its caller; otherwise disabling BLE after a
+read can free the same buffer again during HID deinitialization. Each source
+transformation fails at CMake configuration if the expected ESP-IDF 5.5.5 block
+changes, and CI verifies that both production targets compile the generated
+translation unit.
 
 On hardware, a successful open should proceed from
 `Skipping optional Battery Service notification subscription` through the HID
