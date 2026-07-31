@@ -655,9 +655,12 @@ jobs:
   # are now built from https://github.com/cloud-atlas-ai/unified-hifi-control
 
   deploy-pr-preview:
-    name: Deploy PR Preview
+    name: Deploy Dial PR Preview
     runs-on: ubuntu-latest
-    needs: [test-shared, build-idf, build-frame]
+    # Hardware iteration currently happens on the Dial. Keep Frame and the
+    # BLE-disabled fixture as independent compatibility checks, but do not make
+    # testers wait for either before the Dial flasher is published.
+    needs: [test-shared, build-idf]
     if: github.event_name == 'pull_request'
     permissions:
       contents: write
@@ -672,12 +675,6 @@ jobs:
         with:
           name: esp32s3-firmware
           path: esp32s3-artifacts
-
-      - name: Download HiPhi Frame firmware
-        uses: actions/download-artifact@v7
-        with:
-          name: hiphi-frame-firmware
-          path: frame-artifacts
 
       - name: Read preview commit metadata
         id: preview-commit
@@ -708,7 +705,6 @@ jobs:
           # message can never become page markup.
           PREVIEW_SUBJECT_B64="$(printf '%s' "${PREVIEW_COMMIT_SUBJECT}" | base64 --wrap=0)"
           DIAL_MANIFEST_FILE="manifest-s3-${PREVIEW_ID}.json"
-          FRAME_MANIFEST_FILE="manifest-frame-${PREVIEW_ID}.json"
           DIAL_APPLICATION_FILE="hiphi_dial-${PREVIEW_ID}.bin"
           DIAL_BOOTLOADER_FILE="hiphi_dial_bootloader-${PREVIEW_ID}.bin"
           DIAL_PARTITION_FILE="hiphi_dial_partition-table-${PREVIEW_ID}.bin"
@@ -716,14 +712,7 @@ jobs:
           DIAL_LEGACY_APPLICATION_FILE="roon_knob-${PREVIEW_ID}.bin"
           DIAL_FIRMWARE_FILE="hiphi_dial_merged-${PREVIEW_ID}.bin"
           DIAL_LEGACY_FIRMWARE_FILE="roon_knob_merged-${PREVIEW_ID}.bin"
-          FRAME_FIRMWARE_FILE="hiphi_frame_merged-${PREVIEW_ID}.bin"
-          FRAME_APPLICATION_FILE="hiphi_frame-${PREVIEW_ID}.bin"
-          FRAME_BOOTLOADER_FILE="hiphi_frame_bootloader-${PREVIEW_ID}.bin"
-          FRAME_PARTITION_FILE="hiphi_frame_partition-table-${PREVIEW_ID}.bin"
-          FRAME_OTA_DATA_FILE="hiphi_frame_ota_data_initial-${PREVIEW_ID}.bin"
-          FLASH_PAGE="flash-${PREVIEW_ID}.html"
           DIAL_FLASH_PAGE="flash-dial-${PREVIEW_ID}.html"
-          FRAME_FLASH_PAGE="flash-frame-${PREVIEW_ID}.html"
 
           # Use immutable names so an older preview can never flash a newer build.
           cp esp32s3-artifacts/idf_app/build/hiphi_dial.bin \
@@ -744,17 +733,6 @@ jobs:
             "pr-preview/${DIAL_LEGACY_FIRMWARE_FILE}"
           cmp "pr-preview/${DIAL_FIRMWARE_FILE}" \
             "pr-preview/${DIAL_LEGACY_FIRMWARE_FILE}"
-          cp frame-artifacts/hiphi_frame_merged.bin \
-            "pr-preview/${FRAME_FIRMWARE_FILE}"
-          cp frame-artifacts/frame_app/build/hiphi_frame.bin \
-            "pr-preview/${FRAME_APPLICATION_FILE}"
-          cp frame-artifacts/frame_app/build/bootloader/bootloader.bin \
-            "pr-preview/${FRAME_BOOTLOADER_FILE}"
-          cp frame-artifacts/frame_app/build/partition_table/partition-table.bin \
-            "pr-preview/${FRAME_PARTITION_FILE}"
-          cp frame-artifacts/frame_app/build/ota_data_initial.bin \
-            "pr-preview/${FRAME_OTA_DATA_FILE}"
-
           # Immutable preview paths avoid stale GitHub Pages CDN entries.
           cat > "pr-preview/${DIAL_MANIFEST_FILE}" << EOF
           {
@@ -773,51 +751,23 @@ jobs:
           }
           EOF
 
-          cat > "pr-preview/${FRAME_MANIFEST_FILE}" << EOF
-          {
-            "name": "HiPhi Frame (PR #${PR_NUM} Preview)",
-            "version": "pr-${PR_NUM}",
-            "new_install_prompt_erase": true,
-            "builds": [{
-              "chipFamily": "ESP32-S3",
-              "parts": [
-                { "path": "${FRAME_BOOTLOADER_FILE}", "offset": 0 },
-                { "path": "${FRAME_PARTITION_FILE}", "offset": 32768 },
-                { "path": "${FRAME_OTA_DATA_FILE}", "offset": 53248 },
-                { "path": "${FRAME_APPLICATION_FILE}", "offset": 65536 }
-              ]
-            }]
-          }
-          EOF
-
-          # Create combined and target-specific pages for this exact build.
-          for page_spec in \
-            "all:${FLASH_PAGE}" \
-            "dial:${DIAL_FLASH_PAGE}" \
-            "frame:${FRAME_FLASH_PAGE}"; do
-            TARGET_FILTER=${page_spec%%:*}
-            TARGET_PAGE=${page_spec#*:}
-            sed \
-              -e "s/{{PR_NUMBER}}/${PR_NUM}/g" \
-              -e "s/{{TARGET_FILTER}}/${TARGET_FILTER}/g" \
-              -e "s/{{PREVIEW_CREATED_AT}}/${PREVIEW_CREATED_AT}/g" \
-              -e "s/{{PREVIEW_HEAD_SHA}}/${PREVIEW_HEAD_SHA}/g" \
-              -e "s/{{PREVIEW_HEAD_SHA_SHORT}}/${PREVIEW_HEAD_SHA_SHORT}/g" \
-              -e "s/{{PREVIEW_MERGE_SHA_SHORT}}/${PREVIEW_MERGE_SHA_SHORT}/g" \
-              -e "s|{{PREVIEW_RUN_URL}}|${PREVIEW_RUN_URL}|g" \
-              -e "s/{{PREVIEW_RUN_ID}}/${GITHUB_RUN_ID}/g" \
-              -e "s/{{PREVIEW_RUN_ATTEMPT}}/${GITHUB_RUN_ATTEMPT}/g" \
-              -e "s|{{PREVIEW_SUBJECT_B64}}|${PREVIEW_SUBJECT_B64}|g" \
-              -e "s|manifest-s3.json|${DIAL_MANIFEST_FILE}|g" \
-              -e "s|manifest-frame.json|${FRAME_MANIFEST_FILE}|g" \
-              web/flash-pr.html > "pr-preview/${TARGET_PAGE}"
-          done
+          # Create the Dial-only page for this exact build.
+          sed \
+            -e "s/{{PR_NUMBER}}/${PR_NUM}/g" \
+            -e "s/{{TARGET_FILTER}}/dial/g" \
+            -e "s/{{PREVIEW_CREATED_AT}}/${PREVIEW_CREATED_AT}/g" \
+            -e "s/{{PREVIEW_HEAD_SHA}}/${PREVIEW_HEAD_SHA}/g" \
+            -e "s/{{PREVIEW_HEAD_SHA_SHORT}}/${PREVIEW_HEAD_SHA_SHORT}/g" \
+            -e "s/{{PREVIEW_MERGE_SHA_SHORT}}/${PREVIEW_MERGE_SHA_SHORT}/g" \
+            -e "s|{{PREVIEW_RUN_URL}}|${PREVIEW_RUN_URL}|g" \
+            -e "s/{{PREVIEW_RUN_ID}}/${GITHUB_RUN_ID}/g" \
+            -e "s/{{PREVIEW_RUN_ATTEMPT}}/${GITHUB_RUN_ATTEMPT}/g" \
+            -e "s|{{PREVIEW_SUBJECT_B64}}|${PREVIEW_SUBJECT_B64}|g" \
+            -e "s|manifest-s3.json|${DIAL_MANIFEST_FILE}|g" \
+            web/flash-pr.html > "pr-preview/${DIAL_FLASH_PAGE}"
 
           python3 scripts/check_flash_manifest.py \
             "pr-preview/${DIAL_MANIFEST_FILE}" --assets-dir pr-preview
-          python3 scripts/check_flash_manifest.py \
-            "pr-preview/${FRAME_MANIFEST_FILE}" --assets-dir pr-preview
-
           echo "PR preview contents:"
           ls -la pr-preview/
 
@@ -836,11 +786,8 @@ jobs:
           PREVIEW_ID: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           PREVIEW_BASE="https://roon-knob.muness.com/pr/${PR_NUM}"
-          FLASH_PAGE="flash-${PREVIEW_ID}.html"
           DIAL_FLASH_PAGE="flash-dial-${PREVIEW_ID}.html"
-          FRAME_FLASH_PAGE="flash-frame-${PREVIEW_ID}.html"
           DIAL_MANIFEST_FILE="manifest-s3-${PREVIEW_ID}.json"
-          FRAME_MANIFEST_FILE="manifest-frame-${PREVIEW_ID}.json"
           DIAL_APPLICATION_FILE="hiphi_dial-${PREVIEW_ID}.bin"
           DIAL_BOOTLOADER_FILE="hiphi_dial_bootloader-${PREVIEW_ID}.bin"
           DIAL_PARTITION_FILE="hiphi_dial_partition-table-${PREVIEW_ID}.bin"
@@ -848,11 +795,6 @@ jobs:
           DIAL_LEGACY_APPLICATION_FILE="roon_knob-${PREVIEW_ID}.bin"
           DIAL_FIRMWARE_FILE="hiphi_dial_merged-${PREVIEW_ID}.bin"
           DIAL_LEGACY_FIRMWARE_FILE="roon_knob_merged-${PREVIEW_ID}.bin"
-          FRAME_FIRMWARE_FILE="hiphi_frame_merged-${PREVIEW_ID}.bin"
-          FRAME_APPLICATION_FILE="hiphi_frame-${PREVIEW_ID}.bin"
-          FRAME_BOOTLOADER_FILE="hiphi_frame_bootloader-${PREVIEW_ID}.bin"
-          FRAME_PARTITION_FILE="hiphi_frame_partition-table-${PREVIEW_ID}.bin"
-          FRAME_OTA_DATA_FILE="hiphi_frame_ota_data_initial-${PREVIEW_ID}.bin"
 
           mkdir -p deployed-preview
 
@@ -860,8 +802,8 @@ jobs:
           # preview until the custom domain serves this exact deployment.
           for attempt in $(seq 1 45); do
             if curl --fail --silent --show-error --location \
-              "${PREVIEW_BASE}/${FLASH_PAGE}" \
-              --output "deployed-preview/${FLASH_PAGE}"; then
+              "${PREVIEW_BASE}/${DIAL_FLASH_PAGE}" \
+              --output "deployed-preview/${DIAL_FLASH_PAGE}"; then
               break
             fi
             if [ "${attempt}" -eq 45 ]; then
@@ -873,70 +815,44 @@ jobs:
 
           for asset in \
             "${DIAL_FLASH_PAGE}" \
-            "${FRAME_FLASH_PAGE}" \
             "${DIAL_MANIFEST_FILE}" \
-            "${FRAME_MANIFEST_FILE}" \
             "${DIAL_APPLICATION_FILE}" \
             "${DIAL_BOOTLOADER_FILE}" \
             "${DIAL_PARTITION_FILE}" \
             "${DIAL_OTA_DATA_FILE}" \
             "${DIAL_LEGACY_APPLICATION_FILE}" \
             "${DIAL_FIRMWARE_FILE}" \
-            "${DIAL_LEGACY_FIRMWARE_FILE}" \
-            "${FRAME_FIRMWARE_FILE}" \
-            "${FRAME_APPLICATION_FILE}" \
-            "${FRAME_BOOTLOADER_FILE}" \
-            "${FRAME_PARTITION_FILE}" \
-            "${FRAME_OTA_DATA_FILE}"; do
+            "${DIAL_LEGACY_FIRMWARE_FILE}"; do
             curl --fail --silent --show-error --location \
               "${PREVIEW_BASE}/${asset}" \
               --output "deployed-preview/${asset}"
           done
 
           for asset in \
-            "${FLASH_PAGE}" \
             "${DIAL_FLASH_PAGE}" \
-            "${FRAME_FLASH_PAGE}" \
             "${DIAL_MANIFEST_FILE}" \
-            "${FRAME_MANIFEST_FILE}" \
             "${DIAL_APPLICATION_FILE}" \
             "${DIAL_BOOTLOADER_FILE}" \
             "${DIAL_PARTITION_FILE}" \
             "${DIAL_OTA_DATA_FILE}" \
             "${DIAL_LEGACY_APPLICATION_FILE}" \
             "${DIAL_FIRMWARE_FILE}" \
-            "${DIAL_LEGACY_FIRMWARE_FILE}" \
-            "${FRAME_FIRMWARE_FILE}" \
-            "${FRAME_APPLICATION_FILE}" \
-            "${FRAME_BOOTLOADER_FILE}" \
-            "${FRAME_PARTITION_FILE}" \
-            "${FRAME_OTA_DATA_FILE}"; do
+            "${DIAL_LEGACY_FIRMWARE_FILE}"; do
             cmp "pr-preview/${asset}" "deployed-preview/${asset}"
           done
 
           echo "Verified exact deployed preview assets:"
           grep -F 'data-target-filter="dial"' \
             "deployed-preview/${DIAL_FLASH_PAGE}"
-          grep -F 'data-target-filter="frame"' \
-            "deployed-preview/${FRAME_FLASH_PAGE}"
           grep -F "\"path\": \"${DIAL_APPLICATION_FILE}\"" \
             "deployed-preview/${DIAL_MANIFEST_FILE}"
-          ! grep -F "${FRAME_APPLICATION_FILE}" \
-            "deployed-preview/${DIAL_MANIFEST_FILE}"
-          grep -F "\"path\": \"${FRAME_APPLICATION_FILE}\"" \
-            "deployed-preview/${FRAME_MANIFEST_FILE}"
-          ! grep -F "${DIAL_APPLICATION_FILE}" \
-            "deployed-preview/${FRAME_MANIFEST_FILE}"
           python3 scripts/check_flash_manifest.py \
             "deployed-preview/${DIAL_MANIFEST_FILE}" --assets-dir deployed-preview
-          python3 scripts/check_flash_manifest.py \
-            "deployed-preview/${FRAME_MANIFEST_FILE}" --assets-dir deployed-preview
           sha256sum \
             "deployed-preview/${DIAL_APPLICATION_FILE}" \
             "deployed-preview/${DIAL_LEGACY_APPLICATION_FILE}" \
             "deployed-preview/${DIAL_FIRMWARE_FILE}" \
-            "deployed-preview/${DIAL_LEGACY_FIRMWARE_FILE}" \
-            "deployed-preview/${FRAME_FIRMWARE_FILE}"
+            "deployed-preview/${DIAL_LEGACY_FIRMWARE_FILE}"
           cmp "deployed-preview/${DIAL_APPLICATION_FILE}" \
             "deployed-preview/${DIAL_LEGACY_APPLICATION_FILE}"
           cmp "deployed-preview/${DIAL_FIRMWARE_FILE}" \
@@ -944,13 +860,9 @@ jobs:
 
           {
             echo "dial_manifest_url=${PREVIEW_BASE}/${DIAL_MANIFEST_FILE}"
-            echo "frame_manifest_url=${PREVIEW_BASE}/${FRAME_MANIFEST_FILE}"
             echo "dial_firmware_url=${PREVIEW_BASE}/${DIAL_FIRMWARE_FILE}"
-            echo "frame_firmware_url=${PREVIEW_BASE}/${FRAME_FIRMWARE_FILE}"
             echo "dial_firmware_sha256=$(sha256sum "deployed-preview/${DIAL_FIRMWARE_FILE}" | awk '{print $1}')"
-            echo "frame_firmware_sha256=$(sha256sum "deployed-preview/${FRAME_FIRMWARE_FILE}" | awk '{print $1}')"
             echo "dial_firmware_bytes=$(stat --format=%s "deployed-preview/${DIAL_FIRMWARE_FILE}")"
-            echo "frame_firmware_bytes=$(stat --format=%s "deployed-preview/${FRAME_FIRMWARE_FILE}")"
           } >> "$GITHUB_OUTPUT"
 
       - name: Post preview URL to PR
@@ -958,13 +870,9 @@ jobs:
         env:
           PREVIEW_ID: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           DIAL_MANIFEST_URL: ${{ steps.verify-preview.outputs.dial_manifest_url }}
-          FRAME_MANIFEST_URL: ${{ steps.verify-preview.outputs.frame_manifest_url }}
           DIAL_FIRMWARE_URL: ${{ steps.verify-preview.outputs.dial_firmware_url }}
-          FRAME_FIRMWARE_URL: ${{ steps.verify-preview.outputs.frame_firmware_url }}
           DIAL_FIRMWARE_SHA256: ${{ steps.verify-preview.outputs.dial_firmware_sha256 }}
-          FRAME_FIRMWARE_SHA256: ${{ steps.verify-preview.outputs.frame_firmware_sha256 }}
           DIAL_FIRMWARE_BYTES: ${{ steps.verify-preview.outputs.dial_firmware_bytes }}
-          FRAME_FIRMWARE_BYTES: ${{ steps.verify-preview.outputs.frame_firmware_bytes }}
           PREVIEW_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PREVIEW_COMMIT_SUBJECT: ${{ steps.preview-commit.outputs.subject }}
           PREVIEW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -974,13 +882,9 @@ jobs:
           script: |
             const prNumber = context.payload.pull_request.number;
             const previewBase = `https://roon-knob.muness.com/pr/${prNumber}`;
-            const combinedUrl = `${previewBase}/flash-${process.env.PREVIEW_ID}.html`;
             const dialUrl = `${previewBase}/flash-dial-${process.env.PREVIEW_ID}.html`;
-            const frameUrl = `${previewBase}/flash-frame-${process.env.PREVIEW_ID}.html`;
             const dialManifestUrl = process.env.DIAL_MANIFEST_URL;
-            const frameManifestUrl = process.env.FRAME_MANIFEST_URL;
             const dialFirmwareUrl = process.env.DIAL_FIRMWARE_URL;
-            const frameFirmwareUrl = process.env.FRAME_FIRMWARE_URL;
             const headSha = process.env.PREVIEW_HEAD_SHA;
             const headShaShort = headSha.slice(0, 12);
             const commitUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/commit/${headSha}`;
@@ -1008,17 +912,13 @@ jobs:
             **Commit:** ${process.env.PREVIEW_COMMIT_SUBJECT}
 
             - [Flash HiPhi Dial](${dialUrl})
-            - [Flash HiPhi Frame](${frameUrl})
-            - [Show both targets](${combinedUrl})
 
             ### Exact-artifact provenance
 
             - Dial: [flash page](${dialUrl}) · [manifest](${dialManifestUrl}) · [merged binary](${dialFirmwareUrl})
               — \`${process.env.DIAL_FIRMWARE_SHA256}\` (${process.env.DIAL_FIRMWARE_BYTES} bytes)
-            - Frame: [flash page](${frameUrl}) · [manifest](${frameManifestUrl}) · [merged binary](${frameFirmwareUrl})
-              — \`${process.env.FRAME_FIRMWARE_SHA256}\` (${process.env.FRAME_FIRMWARE_BYTES} bytes)
 
-            Each deployed binary is byte-for-byte identical to its GitHub Actions artifact. The linked HTML pages, manifests, and binaries returned HTTP 200 during deployment verification. Hardware testing remains the active gate; no merge is authorized.
+            The deployed binary is byte-for-byte identical to its GitHub Actions artifact. The linked HTML page, manifest, and binaries returned HTTP 200 during deployment verification. Frame and BLE-disabled compatibility checks run independently and do not gate this Dial preview. Hardware testing remains the active gate; no merge is authorized.
 
             _Updated: ${new Date().toISOString()}_`;
 
