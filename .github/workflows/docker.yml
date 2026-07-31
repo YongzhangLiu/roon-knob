@@ -782,6 +782,7 @@ jobs:
       - name: Verify deployed preview
         id: verify-preview
         env:
+          GH_TOKEN: ${{ github.token }}
           PR_NUM: ${{ github.event.pull_request.number }}
           PREVIEW_ID: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
@@ -800,17 +801,25 @@ jobs:
 
           # Pushing gh-pages starts a separate Pages build. Do not advertise the
           # preview until the custom domain serves this exact deployment.
-          for attempt in $(seq 1 45); do
-            if curl --fail --silent --show-error --location \
+          # The gh-pages push starts a separate Pages workflow. Under runner
+          # load it can remain queued for several minutes, so the verifier must
+          # outlive that queue while still refusing to advertise a 404.
+          for attempt in $(seq 1 180); do
+            if curl --fail --silent --location \
               "${PREVIEW_BASE}/${DIAL_FLASH_PAGE}" \
               --output "deployed-preview/${DIAL_FLASH_PAGE}"; then
               break
             fi
-            if [ "${attempt}" -eq 45 ]; then
-              echo "Preview did not become available after 90 seconds"
+            if [ "$((attempt % 12))" -eq 0 ]; then
+              echo "Waiting for GitHub Pages (${attempt}/180 attempts)..."
+              gh api "repos/${GITHUB_REPOSITORY}/pages/builds/latest" \
+                --jq '{status, commit, created_at, updated_at, error}' || true
+            fi
+            if [ "${attempt}" -eq 180 ]; then
+              echo "Preview did not become available after 15 minutes"
               exit 1
             fi
-            sleep 2
+            sleep 5
           done
 
           for asset in \
