@@ -518,4 +518,18 @@ static inline bool rk_cfg_v3_equal(const rk_cfg_t *left, const rk_cfg_t *right) 
            memcmp(&left_canonical, &right_canonical,
                   sizeof(left_canonical)) == 0;
 }
+
+/* Compare an arbitrary candidate with an already-canonical V3 value using one
+ * scratch record. Storage verification uses this after writing its canonical
+ * candidate, avoiding the two-scratch general equality helper on ESP tasks. */
+static inline bool rk_cfg_v3_equal_to_canonical(
+    const rk_cfg_t *candidate, const rk_cfg_t *canonical) {
+    if (!candidate || !canonical) {
+        return false;
+    }
+    rk_cfg_t candidate_canonical;
+    return rk_cfg_canonicalize_v3(&candidate_canonical, candidate) &&
+           memcmp(&candidate_canonical, canonical,
+                  sizeof(candidate_canonical)) == 0;
+}
 _Static_assert(sizeof(rk_cfg_t) == 570, "rk_cfg_t size changed - update migration sizes");

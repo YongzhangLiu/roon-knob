@@ -27,12 +27,6 @@ void app_entry(void) {
         return;
     }
 
-    controller_config_snapshot_t config = {0};
-    if (!controller_config_snapshot(&config)) {
-        LOGE("configuration owner did not publish a startup snapshot");
-        return;
-    }
-
     // Note: mDNS init moved to after WiFi connects (in main_idf.c)
     app_controller_init();
     bridge_client_start();

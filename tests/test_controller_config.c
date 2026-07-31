@@ -607,6 +607,26 @@ static void assert_every_named_field_is_compared(void) {
 #undef ASSERT_CHANGED
 }
 
+static void assert_storage_verification_ignores_padding(void) {
+    rk_cfg_t canonical;
+    rk_cfg_t noisy = make_full_config();
+    assert(rk_cfg_canonicalize_v3(&canonical, &noisy));
+
+    /* These are the alignment bytes before the V2 uint16_t timeout fields.
+     * Historical blobs may contain arbitrary values here; they are not named
+     * configuration state and must not turn a successful readback into an
+     * unverified commit. */
+    const size_t padding_offsets[] = {337, 341, 345, 349,
+                                      353, 357, 361, 365};
+    for (size_t i = 0; i < sizeof(padding_offsets) / sizeof(padding_offsets[0]);
+         ++i) {
+        ((uint8_t *)&noisy)[padding_offsets[i]] = (uint8_t)(0xa0u + i);
+    }
+
+    assert(memcmp(&noisy, &canonical, sizeof(noisy)) != 0);
+    assert(rk_cfg_v3_equal_to_canonical(&noisy, &canonical));
+}
+
 static void *add_wifi_thread(void *arg) {
     (void)arg;
     assert(controller_config_upsert_wifi("office", "office-pass", false,
@@ -707,6 +727,7 @@ int main(void) {
     test_write_outcomes_and_all_or_nothing_validation();
     test_endpoint_and_remote_write_outcomes();
     assert_every_named_field_is_compared();
+    assert_storage_verification_ignores_padding();
     test_interleaved_mutations_keep_both_field_sets();
     test_endpoint_tokens_fail_closed_on_newer_endpoint_decisions();
     puts("controller config owner contracts passed");

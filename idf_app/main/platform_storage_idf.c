@@ -158,7 +158,10 @@ platform_storage_write_result_t platform_storage_write(const rk_cfg_t *in) {
         return PLATFORM_STORAGE_COMMITTED_UNVERIFIED;
     }
 
-    if (!rk_cfg_v3_equal(&verify, &copy)) {
+    /* Canonicalize only the readback. copy is already canonical, so this
+     * preserves padding-independent comparison without the old two-canonical
+     * helper's additional stack peak. */
+    if (!rk_cfg_v3_equal_to_canonical(&verify, &copy)) {
         ESP_LOGE(TAG, "VERIFY FAILED: full V3 candidate mismatch");
         return PLATFORM_STORAGE_COMMITTED_UNVERIFIED;
     }

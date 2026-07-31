@@ -12,6 +12,11 @@ CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
 # v4's non-debug release profile (-O2).
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
 
+# Shared configuration startup canonicalizes the 570-byte V3 compatibility
+# record through nested storage/read-back frames. Match the Frame target's
+# proven startup budget instead of relying on ESP-IDF's 3584-byte default.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
 # Wi-Fi provisioning starts the captive portal from ESP-IDF's default event-loop
 # task (sys_evt). Its 2304-byte default overflows under the PERF build.
 CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096

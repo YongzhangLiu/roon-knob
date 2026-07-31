@@ -151,7 +151,10 @@ platform_storage_write_result_t platform_storage_write(const rk_cfg_t *in) {
         ESP_LOGE(TAG, "VERIFY FAILED: Could not read back saved config!");
         return PLATFORM_STORAGE_COMMITTED_UNVERIFIED;
     }
-    if (!rk_cfg_v3_equal(&verify, &copy)) {
+    /* Canonicalize only the readback. copy is already canonical, so comparison
+     * remains independent of structure padding with one fewer compatibility
+     * record on the caller's task stack than rk_cfg_v3_equal(). */
+    if (!rk_cfg_v3_equal_to_canonical(&verify, &copy)) {
         ESP_LOGE(TAG, "VERIFY FAILED: full V3 candidate mismatch!");
         return PLATFORM_STORAGE_COMMITTED_UNVERIFIED;
     }

@@ -4,7 +4,6 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Flash Firmware - PR #{{PR_NUMBER}} Preview</title>
-  <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
   <style>
     :root {
       --bg: #1a1a2e;
@@ -113,7 +112,7 @@
     .requirements li { margin-bottom: 8px; color: var(--text-muted); }
   </style>
 </head>
-<body>
+<body data-target-filter="{{TARGET_FILTER}}">
   <div class="container">
     <a href="/flash.html" class="back-link">&larr; Back to stable release</a>
 
@@ -139,7 +138,7 @@
     </div>
 
     <!-- HiPhi Dial -->
-    <div class="card">
+    <div class="card" id="dial-card">
       <h2>HiPhi Dial <span class="chip-badge">ESP32-S3</span></h2>
       <p class="description">
         The round touchscreen controller with rotary input, WiFi playback
@@ -167,7 +166,7 @@
     </div>
 
     <!-- HiPhi Frame -->
-    <div class="card">
+    <div class="card" id="frame-card">
       <h2>HiPhi Frame <span class="chip-badge">ESP32-S3 e-ink</span></h2>
       <p class="description">
         The rectangular e-ink now-playing display with physical buttons and BLE media-remote support.
@@ -208,9 +207,19 @@
   </div>
 
   <script>
+    const targetFilter = document.body.dataset.targetFilter;
+    if (targetFilter === 'dial') {
+      document.getElementById('frame-card').remove();
+      document.querySelector('h1').textContent = 'Flash HiPhi Dial Firmware';
+    } else if (targetFilter === 'frame') {
+      document.getElementById('dial-card').remove();
+      document.querySelector('h1').textContent = 'Flash HiPhi Frame Firmware';
+    }
+
     if (!('serial' in navigator)) {
       document.getElementById('unsupported').style.display = 'block';
     }
   </script>
+  <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
 </body>
 </html>

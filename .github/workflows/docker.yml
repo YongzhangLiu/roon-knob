@@ -299,6 +299,12 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-esp-idf-v5.5.5-ccache-
 
+      - name: Restore Dial managed components
+        uses: actions/cache@v5
+        with:
+          path: idf_app/managed_components
+          key: ${{ runner.os }}-esp-idf-v5.5.5-dial-components-${{ hashFiles('idf_app/dependencies.lock') }}
+
       - name: Build with ESP-IDF
         uses: espressif/esp-idf-ci-action@v1
         with:
@@ -307,11 +313,15 @@ jobs:
           path: idf_app
           extra_docker_args: >-
             -e CCACHE_DIR=/app/${{ github.repository }}/.ci/ccache
+            -e CCACHE_MAXSIZE=500M
+            -e CCACHE_COMPRESS=1
           command: >-
             set -e;
+            ccache --zero-stats;
             idf.py build;
             grep -Fx "CONFIG_COMPILER_OPTIMIZATION_PERF=y" sdkconfig;
             ! grep -Fx "CONFIG_COMPILER_OPTIMIZATION_DEBUG=y" sdkconfig;
+            grep -Fx "CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192" sdkconfig;
             grep -Fx "CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096" sdkconfig;
             grep -Fx "CONFIG_RK_BLE_HID_HOST=y" sdkconfig;
             grep -Fx "CONFIG_BT_ENABLED=y" sdkconfig;
@@ -320,19 +330,18 @@ jobs:
             grep -Fx "CONFIG_BT_NIMBLE_SM_SC=y" sdkconfig;
             grep -Fx "CONFIG_BT_NIMBLE_HID_SERVICE=y" sdkconfig;
             cp build/hiphi_dial.bin build/roon_knob.bin;
-            cmp build/hiphi_dial.bin build/roon_knob.bin
+            cmp build/hiphi_dial.bin build/roon_knob.bin;
+            esptool.py --chip esp32s3 merge_bin
+            -o ../hiphi_dial_merged.bin
+            --flash_mode dio --flash_freq 80m --flash_size 16MB
+            0x0 build/bootloader/bootloader.bin
+            0x8000 build/partition_table/partition-table.bin
+            0xd000 build/ota_data_initial.bin
+            0x10000 build/hiphi_dial.bin;
+            ccache --show-stats
 
-      - name: Create merged flash image for web flashing
+      - name: Verify merged Dial flash image
         run: |
-          pip install esptool
-          esptool --chip esp32s3 merge-bin \
-            -o hiphi_dial_merged.bin \
-            --flash-mode dio --flash-freq 80m --flash-size 16MB \
-            0x0 idf_app/build/bootloader/bootloader.bin \
-            0x8000 idf_app/build/partition_table/partition-table.bin \
-            0xd000 idf_app/build/ota_data_initial.bin \
-            0x10000 idf_app/build/hiphi_dial.bin
-
           # Compatibility aliases remain byte-identical while bridge/release
           # consumers migrate to the HiPhi Dial artifact names.
           cp hiphi_dial_merged.bin roon_knob_merged.bin
@@ -384,6 +393,12 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-esp-idf-v5.5.5-frame-ccache-
 
+      - name: Restore Frame managed components
+        uses: actions/cache@v5
+        with:
+          path: frame_app/managed_components
+          key: ${{ runner.os }}-esp-idf-v5.5.5-frame-components-${{ hashFiles('frame_app/dependencies.lock') }}
+
       - name: Build HiPhi Frame with ESP-IDF
         uses: espressif/esp-idf-ci-action@v1
         with:
@@ -392,11 +407,15 @@ jobs:
           path: frame_app
           extra_docker_args: >-
             -e CCACHE_DIR=/app/${{ github.repository }}/.ci/ccache-frame
+            -e CCACHE_MAXSIZE=500M
+            -e CCACHE_COMPRESS=1
           command: >-
             set -e;
+            ccache --zero-stats;
             idf.py build;
             grep -Fx "CONFIG_COMPILER_OPTIMIZATION_PERF=y" sdkconfig;
             ! grep -Fx "CONFIG_COMPILER_OPTIMIZATION_DEBUG=y" sdkconfig;
+            grep -Fx "CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192" sdkconfig;
             grep -Fx "CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096" sdkconfig;
             grep -Fx "CONFIG_RK_BLE_HID_HOST=y" sdkconfig;
             grep -Fx "CONFIG_BT_ENABLED=y" sdkconfig;
@@ -405,22 +424,22 @@ jobs:
             grep -Fx "CONFIG_BT_NIMBLE_SM_SC=y" sdkconfig;
             grep -Fx "CONFIG_BT_NIMBLE_HID_SERVICE=y" sdkconfig;
             grep -Fx "CONFIG_ESPTOOLPY_FLASHMODE_QIO=y" sdkconfig;
-            grep -Fx "CONFIG_ESPTOOLPY_FLASHFREQ_80M=y" sdkconfig
+            grep -Fx "CONFIG_ESPTOOLPY_FLASHFREQ_80M=y" sdkconfig;
+            esptool.py --chip esp32s3 merge_bin
+            -o ../hiphi_frame_merged.bin
+            --flash_mode dio --flash_freq 80m --flash_size 16MB
+            0x0 build/bootloader/bootloader.bin
+            0x8000 build/partition_table/partition-table.bin
+            0xd000 build/ota_data_initial.bin
+            0x10000 build/hiphi_frame.bin;
+            esptool.py --chip esp32s3 image_info ../hiphi_frame_merged.bin;
+            ccache --show-stats
 
-      - name: Create merged HiPhi Frame image
+      - name: Verify merged HiPhi Frame image
         run: |
-          pip install esptool
           # ESP-IDF boots QIO configurations from a DIO image header, then the
           # second-stage bootloader enables quad mode.
-          esptool --chip esp32s3 merge-bin \
-            -o hiphi_frame_merged.bin \
-            --flash-mode dio --flash-freq 80m --flash-size 16MB \
-            0x0 frame_app/build/bootloader/bootloader.bin \
-            0x8000 frame_app/build/partition_table/partition-table.bin \
-            0xd000 frame_app/build/ota_data_initial.bin \
-            0x10000 frame_app/build/hiphi_frame.bin
           test "$(od -An -tu1 -j2 -N1 hiphi_frame_merged.bin | tr -d ' ')" = "2"
-          esptool --chip esp32s3 image-info hiphi_frame_merged.bin
           ls -la frame_app/build/hiphi_frame.bin hiphi_frame_merged.bin
 
       - name: Upload HiPhi Frame artifact
@@ -628,6 +647,8 @@ jobs:
           DIAL_LEGACY_FIRMWARE_FILE="roon_knob_merged-${PREVIEW_ID}.bin"
           FRAME_FIRMWARE_FILE="hiphi_frame_merged-${PREVIEW_ID}.bin"
           FLASH_PAGE="flash-${PREVIEW_ID}.html"
+          DIAL_FLASH_PAGE="flash-dial-${PREVIEW_ID}.html"
+          FRAME_FLASH_PAGE="flash-frame-${PREVIEW_ID}.html"
 
           # Use immutable names so an older preview can never flash a newer build.
           cp esp32s3-artifacts/idf_app/build/hiphi_dial.bin \
@@ -676,12 +697,20 @@ jobs:
           }
           EOF
 
-          # Create a page that points at the manifest for this exact build.
-          sed \
-            -e "s/{{PR_NUMBER}}/${PR_NUM}/g" \
-            -e "s|manifest-s3.json|${DIAL_MANIFEST_FILE}|g" \
-            -e "s|manifest-frame.json|${FRAME_MANIFEST_FILE}|g" \
-            web/flash-pr.html > "pr-preview/${FLASH_PAGE}"
+          # Create combined and target-specific pages for this exact build.
+          for page_spec in \
+            "all:${FLASH_PAGE}" \
+            "dial:${DIAL_FLASH_PAGE}" \
+            "frame:${FRAME_FLASH_PAGE}"; do
+            TARGET_FILTER=${page_spec%%:*}
+            TARGET_PAGE=${page_spec#*:}
+            sed \
+              -e "s/{{PR_NUMBER}}/${PR_NUM}/g" \
+              -e "s/{{TARGET_FILTER}}/${TARGET_FILTER}/g" \
+              -e "s|manifest-s3.json|${DIAL_MANIFEST_FILE}|g" \
+              -e "s|manifest-frame.json|${FRAME_MANIFEST_FILE}|g" \
+              web/flash-pr.html > "pr-preview/${TARGET_PAGE}"
+          done
 
           echo "PR preview contents:"
           ls -la pr-preview/
@@ -701,6 +730,8 @@ jobs:
         run: |
           PREVIEW_BASE="https://roon-knob.muness.com/pr/${PR_NUM}"
           FLASH_PAGE="flash-${PREVIEW_ID}.html"
+          DIAL_FLASH_PAGE="flash-dial-${PREVIEW_ID}.html"
+          FRAME_FLASH_PAGE="flash-frame-${PREVIEW_ID}.html"
           DIAL_MANIFEST_FILE="manifest-s3-${PREVIEW_ID}.json"
           FRAME_MANIFEST_FILE="manifest-frame-${PREVIEW_ID}.json"
           DIAL_APPLICATION_FILE="hiphi_dial-${PREVIEW_ID}.bin"
@@ -727,6 +758,8 @@ jobs:
           done
 
           for asset in \
+            "${DIAL_FLASH_PAGE}" \
+            "${FRAME_FLASH_PAGE}" \
             "${DIAL_MANIFEST_FILE}" \
             "${FRAME_MANIFEST_FILE}" \
             "${DIAL_APPLICATION_FILE}" \
@@ -741,6 +774,8 @@ jobs:
 
           for asset in \
             "${FLASH_PAGE}" \
+            "${DIAL_FLASH_PAGE}" \
+            "${FRAME_FLASH_PAGE}" \
             "${DIAL_MANIFEST_FILE}" \
             "${FRAME_MANIFEST_FILE}" \
             "${DIAL_APPLICATION_FILE}" \
@@ -752,6 +787,18 @@ jobs:
           done
 
           echo "Verified exact deployed preview assets:"
+          grep -F 'data-target-filter="dial"' \
+            "deployed-preview/${DIAL_FLASH_PAGE}"
+          grep -F 'data-target-filter="frame"' \
+            "deployed-preview/${FRAME_FLASH_PAGE}"
+          grep -F "\"path\": \"${DIAL_FIRMWARE_FILE}\"" \
+            "deployed-preview/${DIAL_MANIFEST_FILE}"
+          ! grep -F "${FRAME_FIRMWARE_FILE}" \
+            "deployed-preview/${DIAL_MANIFEST_FILE}"
+          grep -F "\"path\": \"${FRAME_FIRMWARE_FILE}\"" \
+            "deployed-preview/${FRAME_MANIFEST_FILE}"
+          ! grep -F "${DIAL_FIRMWARE_FILE}" \
+            "deployed-preview/${FRAME_MANIFEST_FILE}"
           sha256sum \
             "deployed-preview/${DIAL_APPLICATION_FILE}" \
             "deployed-preview/${DIAL_LEGACY_APPLICATION_FILE}" \
@@ -770,7 +817,10 @@ jobs:
         with:
           script: |
             const prNumber = context.payload.pull_request.number;
-            const previewUrl = `https://roon-knob.muness.com/pr/${prNumber}/flash-${process.env.PREVIEW_ID}.html`;
+            const previewBase = `https://roon-knob.muness.com/pr/${prNumber}`;
+            const combinedUrl = `${previewBase}/flash-${process.env.PREVIEW_ID}.html`;
+            const dialUrl = `${previewBase}/flash-dial-${process.env.PREVIEW_ID}.html`;
+            const frameUrl = `${previewBase}/flash-frame-${process.env.PREVIEW_ID}.html`;
 
             // Check if we already posted a comment
             const comments = await github.rest.issues.listComments({
@@ -785,8 +835,9 @@ jobs:
 
             const body = `### Firmware Previews
 
-            Flash this PR's HiPhi Dial or HiPhi Frame firmware directly in your browser:
-            **${previewUrl}**
+            - [Flash HiPhi Dial](${dialUrl})
+            - [Flash HiPhi Frame](${frameUrl})
+            - [Show both targets](${combinedUrl})
 
             _Updated: ${new Date().toISOString()}_`;
 
@@ -834,7 +885,12 @@ jobs:
         run: |
           mkdir -p gh-pages-build
           cp web/index.html gh-pages-build/
-          cp web/flash.html gh-pages-build/
+          sed 's/{{TARGET_FILTER}}/all/g' web/flash.html \
+            > gh-pages-build/flash.html
+          sed 's/{{TARGET_FILTER}}/dial/g' web/flash.html \
+            > gh-pages-build/flash-dial.html
+          sed 's/{{TARGET_FILTER}}/frame/g' web/flash.html \
+            > gh-pages-build/flash-frame.html
           cp web/manifest-s3.json gh-pages-build/
           cp web/manifest-frame.json gh-pages-build/
           cp esp32s3-artifacts/idf_app/build/hiphi_dial.bin gh-pages-build/
