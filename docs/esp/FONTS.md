@@ -1,6 +1,6 @@
 # Font System
 
-This document describes the font implementation for the Roon Knob display.
+This document describes the font implementation for the HiPhi Dial display.
 
 ## Overview
 

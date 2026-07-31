@@ -129,10 +129,10 @@ void rk_net_evt_cb(rk_net_evt_t evt, const char *ip_opt) {
     }
 
     case RK_NET_EVT_AP_STARTED:
-        ESP_LOGI(TAG, "WiFi: AP mode started (SSID: roon-knob-setup)");
+        ESP_LOGI(TAG, "WiFi: AP mode started (SSID: hiphi-dial-setup)");
         stop_wifi_msg_alternation();
         // Show setup instructions in main display area (line2 is top, line1 is bottom)
-        ui_update("roon-knob-setup", "Connect to WiFi:", false, 0.0f, 0.0f, 100.0f, 1.0f, 0, 0);
+        ui_update("hiphi-dial-setup", "Connect to WiFi:", false, 0.0f, 0.0f, 100.0f, 1.0f, 0, 0);
         ui_set_zone_name("WiFi Setup");
         bridge_client_set_network_ready(false);
         s_config_server_stop_pending = true;  // Stop config server in AP mode
@@ -270,7 +270,7 @@ static void ui_loop_task(void *arg) {
 }
 
 void app_main(void) {
-    ESP_LOGI(TAG, "Roon Knob starting...");
+    ESP_LOGI(TAG, "HiPhi Dial starting...");
 
     // Initialize NVS for configuration storage
     esp_err_t err = nvs_flash_init();

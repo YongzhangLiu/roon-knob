@@ -1,4 +1,4 @@
-// Roon Knob UI - Clean design based on smart-knob approach
+// HiPhi Dial UI - Clean design based on smart-knob approach
 // Uses LVGL default theme + minimal manual styling
 
 #include <stdbool.h>

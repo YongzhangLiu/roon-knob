@@ -40,4 +40,4 @@ if(EXISTS "${_DEFAULTS_FILE}")
 endif()
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
-project(roon_knob)
+project(hiphi_dial)

@@ -136,7 +136,7 @@ static void sanitize_hostname(const char *input, char *output, size_t output_len
 }
 
 // Get device hostname (cached, generated once per boot)
-// Priority: bridge-configured knob_name → MAC-based → "roon-knob"
+// Priority: bridge-configured knob_name → MAC-based → platform default slug
 static const char *get_device_hostname(void) {
     // Cache to avoid regenerating on every call
     if (s_device_hostname[0] != '\0') {

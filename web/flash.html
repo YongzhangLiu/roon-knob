@@ -119,15 +119,16 @@
       Not sure which chip? Just try - ESP Web Tools detects the chip and warns if it doesn't match.
     </div>
 
-    <!-- ESP32-S3 Main Controller -->
+    <!-- HiPhi Dial -->
     <div class="card">
-      <h2>Main Controller <span class="chip-badge">ESP32-S3</span></h2>
+      <h2>HiPhi Dial <span class="chip-badge">ESP32-S3</span></h2>
       <p class="description">
-        The main Roon Knob controller - handles display, rotary encoder, touch, WiFi, and Roon communication.
+        The round touchscreen controller with rotary input, WiFi playback
+        control, and optional BLE media-remote support.
       </p>
       <div class="flash-section">
         <esp-web-install-button manifest="/manifest-s3.json">
-          <button slot="activate">Flash ESP32-S3</button>
+          <button slot="activate">Flash HiPhi Dial</button>
           <span slot="unsupported">Not supported</span>
           <span slot="not-allowed">HTTPS required</span>
         </esp-web-install-button>
@@ -138,7 +139,7 @@
         <ol>
           <li>Turn on the device (power slider towards USB-C port)</li>
           <li>Connect via USB-C</li>
-          <li>Click "Flash ESP32-S3" and select the serial port</li>
+          <li>Click "Flash HiPhi Dial" and select the serial port</li>
           <li>Wait ~30 seconds for flashing to complete</li>
         </ol>
         <p class="port-tip"><strong>Port name:</strong> macOS: <code>cu.usbmodem*</code> · Linux: <code>ttyACM0</code> · Windows: <code>COM*</code></p>
@@ -173,7 +174,7 @@
 
     <div class="warning">
       <strong>First time?</strong><br>
-      Roon Knob creates <code>roon-knob-setup</code>; HiPhi Frame creates
+      HiPhi Dial creates <code>hiphi-dial-setup</code>; HiPhi Frame creates
       <code>hiphi-frame-setup</code>. Connect to the matching network to configure WiFi.
     </div>
 

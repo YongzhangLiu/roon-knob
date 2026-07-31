@@ -38,8 +38,10 @@ Use the [web flasher](https://roon-knob.muness.com/flash.html) in Chrome/Edge - 
 
 ```bash
 pip install esptool
-esptool.py --chip esp32s3 -p /dev/cu.usbmodem* write_flash 0x0 roon_knob_merged.bin
+esptool.py --chip esp32s3 -p /dev/cu.usbmodem* write_flash 0x0 hiphi_dial_merged.bin
 ```
+
+`roon_knob_merged.bin` is a byte-identical compatibility alias for `hiphi_dial_merged.bin`.
 
 **Troubleshooting:** If you get "No serial data received", retry a few times or try another cable.
 

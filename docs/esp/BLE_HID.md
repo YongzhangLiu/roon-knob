@@ -5,7 +5,7 @@ The firmware acts as the BLE HID **host**: it scans for a remote that exposes
 the HID over GATT Profile (HOGP), receives Consumer Control reports, and maps
 supported keys into the shared playback controller.
 
-This is not the older, unimplemented mode where Roon Knob advertised itself as
+This is not the older, unimplemented mode where the historical Roon Knob advertised itself as
 a BLE keyboard/media controller. The two roles are opposites:
 
 | Role | This firmware | Peer |

@@ -1,11 +1,11 @@
 {
-  "name": "Roon Knob (Main Controller)",
+  "name": "HiPhi Dial",
   "version": "latest",
   "new_install_prompt_erase": true,
   "builds": [{
     "chipFamily": "ESP32-S3",
     "parts": [{
-      "path": "roon_knob_merged.bin",
+      "path": "hiphi_dial_merged.bin",
       "offset": 0
     }]
   }]

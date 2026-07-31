@@ -1,13 +1,13 @@
 # OTA Updates
 
-Over-the-air firmware updates allow the Roon Knob to download and install new firmware directly from the bridge without USB flashing.
+Over-the-air firmware updates allow HiPhi Dial to download and install new firmware directly from the bridge without USB flashing.
 
 ## Overview
 
 The OTA system consists of:
 
 - **Device firmware** (`idf_app/main/ota_update.c`) - checks for updates, downloads, and installs
-- **Bridge server** ([unified-hifi-control](https://github.com/cloud-atlas-ai/unified-hifi-control)) - serves version info and firmware binary
+- **Bridge server** ([unified-hifi-control](https://github.com/open-horizon-labs/unified-hifi-control)) - serves version info and firmware binary
 - **CI/CD pipeline** (`.github/workflows/docker.yml`) - builds and packages firmware on release
 
 ## Partition Layout
@@ -107,14 +107,19 @@ The dual-partition scheme ensures the device always has a working firmware to fa
 
 ## Server-Side Setup
 
-The bridge ([unified-hifi-control](https://github.com/cloud-atlas-ai/unified-hifi-control)) serves firmware to devices.
+The bridge ([unified-hifi-control](https://github.com/open-horizon-labs/unified-hifi-control)) serves firmware to devices. HiPhi Dial publishes
+`hiphi_dial.bin` as its primary application image and a byte-identical
+`roon_knob.bin` compatibility alias. Until
+[unified-hifi-control#277](https://github.com/open-horizon-labs/unified-hifi-control/issues/277)
+lands, the released bridge still selects the compatibility alias. The device
+itself uses the filename-independent endpoints below.
 
 ### Firmware Directory Structure
 
 ```
 firmware/
 ├── version.json    # Version metadata
-└── roon_knob.bin   # Firmware binary
+└── roon_knob.bin   # Current bridge-selected compatibility alias
 ```
 
 ### version.json Format
@@ -134,7 +139,11 @@ If `version.json` is missing, the server:
 
 1. Looks for `.bin` files in the firmware directory
 2. Uses the first `.bin` file found
-3. Attempts to extract version from filename pattern: `roon_knob[_-]?v?(\d+\.\d+\.\d+)\.bin`
+3. Attempts to extract a version from the current compatibility filename
+   pattern: `roon_knob[_-]?v?(\d+\.\d+\.\d+)\.bin`
+
+Issue #277 owns accepting `hiphi_dial` filenames, selecting the new primary
+asset, and proving both names during the transition.
 
 ## API Reference
 

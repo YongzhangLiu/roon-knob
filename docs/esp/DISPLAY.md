@@ -1,6 +1,6 @@
 # Display Subsystem
 
-This document covers how the Roon Knob drives its 360×360 pixel AMOLED display using ESP-IDF and LVGL.
+This document covers how HiPhi Dial drives its 360×360 pixel AMOLED display using ESP-IDF and LVGL.
 
 ## Hardware Overview
 

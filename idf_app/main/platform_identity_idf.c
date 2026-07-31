@@ -1,9 +1,9 @@
 #include "platform/platform_identity.h"
 
 const char *platform_device_slug(void) {
-    return "roon-knob";
+    return "hiphi-dial";
 }
 
 const char *platform_provisioning_ssid(void) {
-    return "roon-knob-setup";
+    return "hiphi-dial-setup";
 }

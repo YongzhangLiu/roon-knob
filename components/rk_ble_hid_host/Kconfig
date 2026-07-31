@@ -1,4 +1,4 @@
-menu "Roon-Knob BLE HID host"
+menu "Shared BLE HID host"
 
 config RK_BLE_HID_HOST
     bool "Enable BLE HID media-remote host"

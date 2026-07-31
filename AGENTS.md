@@ -1,4 +1,4 @@
-# Roon-Knob Agent Guide
+# HiPhi Dial Agent Guide
 
 ## Open Horizons Framework
 
@@ -43,7 +43,7 @@ databases or Markdown TODO lists.
 
 ### Purpose
 
-Roon-Knob turns commodity embedded hardware into approachable, dedicated hi-fi
+HiPhi Dial turns commodity embedded hardware into approachable, dedicated hi-fi
 controllers. The product should let someone perform routine listening without
 opening a general-purpose screen: see what is playing and control transport,
 volume, zones, playlists, and programs.

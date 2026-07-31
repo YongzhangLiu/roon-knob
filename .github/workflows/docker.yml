@@ -25,6 +25,7 @@ jobs:
 
       - name: Test shared configuration contracts
         run: |
+          python3 scripts/check_dial_identity.py
           cc -std=c11 -Wall -Wextra -Werror \
             -Icommon tests/test_rk_cfg.c -o /tmp/test-rk-cfg
           /tmp/test-rk-cfg
@@ -110,20 +111,30 @@ jobs:
         run: |
           pip install esptool
           esptool --chip esp32s3 merge-bin \
-            -o roon_knob_merged.bin \
+            -o hiphi_dial_merged.bin \
             --flash-mode dio --flash-freq 80m --flash-size 16MB \
             0x0 idf_app/build/bootloader/bootloader.bin \
             0x8000 idf_app/build/partition_table/partition-table.bin \
             0xd000 idf_app/build/ota_data_initial.bin \
-            0x10000 idf_app/build/roon_knob.bin
-          ls -la *.bin
+            0x10000 idf_app/build/hiphi_dial.bin
+
+          # Compatibility aliases remain byte-identical while bridge/release
+          # consumers migrate to the HiPhi Dial artifact names.
+          cp idf_app/build/hiphi_dial.bin idf_app/build/roon_knob.bin
+          cp hiphi_dial_merged.bin roon_knob_merged.bin
+          cmp idf_app/build/hiphi_dial.bin idf_app/build/roon_knob.bin
+          cmp hiphi_dial_merged.bin roon_knob_merged.bin
+          ls -la idf_app/build/hiphi_dial.bin idf_app/build/roon_knob.bin \
+            hiphi_dial_merged.bin roon_knob_merged.bin
 
       - name: Upload ESP32-S3 artifact
         uses: actions/upload-artifact@v6
         with:
           name: esp32s3-firmware
           path: |
+            idf_app/build/hiphi_dial.bin
             idf_app/build/roon_knob.bin
+            hiphi_dial_merged.bin
             roon_knob_merged.bin
           retention-days: 30
 
@@ -295,8 +306,13 @@ jobs:
       - name: Prepare release assets
         run: |
           mkdir -p release-assets
+          cp esp32s3-artifacts/idf_app/build/hiphi_dial.bin release-assets/
           cp esp32s3-artifacts/idf_app/build/roon_knob.bin release-assets/
+          cp esp32s3-artifacts/hiphi_dial_merged.bin release-assets/
           cp esp32s3-artifacts/roon_knob_merged.bin release-assets/
+          cmp release-assets/hiphi_dial.bin release-assets/roon_knob.bin
+          cmp release-assets/hiphi_dial_merged.bin \
+            release-assets/roon_knob_merged.bin
           cp frame-artifacts/frame_app/build/hiphi_frame.bin release-assets/
           cp frame-artifacts/hiphi_frame_merged.bin release-assets/
           ls -la release-assets/
@@ -329,6 +345,8 @@ jobs:
           draft: false
           prerelease: ${{ contains(github.ref, '-') }}
           files: |
+            release-assets/hiphi_dial.bin
+            release-assets/hiphi_dial_merged.bin
             release-assets/roon_knob.bin
             release-assets/roon_knob_merged.bin
             release-assets/hiphi_frame.bin
@@ -358,7 +376,7 @@ jobs:
   deploy-pr-preview:
     name: Deploy PR Preview
     runs-on: ubuntu-latest
-    needs: [build-idf, build-frame]
+    needs: [test-shared, build-idf, build-frame]
     if: github.event_name == 'pull_request'
     permissions:
       contents: write
@@ -388,20 +406,33 @@ jobs:
           mkdir -p pr-preview
           DIAL_MANIFEST_FILE="manifest-s3-${PREVIEW_ID}.json"
           FRAME_MANIFEST_FILE="manifest-frame-${PREVIEW_ID}.json"
-          DIAL_FIRMWARE_FILE="roon_knob_merged-${PREVIEW_ID}.bin"
+          DIAL_APPLICATION_FILE="hiphi_dial-${PREVIEW_ID}.bin"
+          DIAL_LEGACY_APPLICATION_FILE="roon_knob-${PREVIEW_ID}.bin"
+          DIAL_FIRMWARE_FILE="hiphi_dial_merged-${PREVIEW_ID}.bin"
+          DIAL_LEGACY_FIRMWARE_FILE="roon_knob_merged-${PREVIEW_ID}.bin"
           FRAME_FIRMWARE_FILE="hiphi_frame_merged-${PREVIEW_ID}.bin"
           FLASH_PAGE="flash-${PREVIEW_ID}.html"
 
           # Use immutable names so an older preview can never flash a newer build.
-          cp esp32s3-artifacts/roon_knob_merged.bin \
+          cp esp32s3-artifacts/idf_app/build/hiphi_dial.bin \
+            "pr-preview/${DIAL_APPLICATION_FILE}"
+          cp esp32s3-artifacts/idf_app/build/roon_knob.bin \
+            "pr-preview/${DIAL_LEGACY_APPLICATION_FILE}"
+          cmp "pr-preview/${DIAL_APPLICATION_FILE}" \
+            "pr-preview/${DIAL_LEGACY_APPLICATION_FILE}"
+          cp esp32s3-artifacts/hiphi_dial_merged.bin \
             "pr-preview/${DIAL_FIRMWARE_FILE}"
+          cp esp32s3-artifacts/roon_knob_merged.bin \
+            "pr-preview/${DIAL_LEGACY_FIRMWARE_FILE}"
+          cmp "pr-preview/${DIAL_FIRMWARE_FILE}" \
+            "pr-preview/${DIAL_LEGACY_FIRMWARE_FILE}"
           cp frame-artifacts/hiphi_frame_merged.bin \
             "pr-preview/${FRAME_FIRMWARE_FILE}"
 
           # Immutable preview paths avoid stale GitHub Pages CDN entries.
           cat > "pr-preview/${DIAL_MANIFEST_FILE}" << EOF
           {
-            "name": "Roon Knob (PR #${PR_NUM} Preview)",
+            "name": "HiPhi Dial (PR #${PR_NUM} Preview)",
             "version": "pr-${PR_NUM}",
             "new_install_prompt_erase": true,
             "builds": [{
@@ -456,7 +487,10 @@ jobs:
           FLASH_PAGE="flash-${PREVIEW_ID}.html"
           DIAL_MANIFEST_FILE="manifest-s3-${PREVIEW_ID}.json"
           FRAME_MANIFEST_FILE="manifest-frame-${PREVIEW_ID}.json"
-          DIAL_FIRMWARE_FILE="roon_knob_merged-${PREVIEW_ID}.bin"
+          DIAL_APPLICATION_FILE="hiphi_dial-${PREVIEW_ID}.bin"
+          DIAL_LEGACY_APPLICATION_FILE="roon_knob-${PREVIEW_ID}.bin"
+          DIAL_FIRMWARE_FILE="hiphi_dial_merged-${PREVIEW_ID}.bin"
+          DIAL_LEGACY_FIRMWARE_FILE="roon_knob_merged-${PREVIEW_ID}.bin"
           FRAME_FIRMWARE_FILE="hiphi_frame_merged-${PREVIEW_ID}.bin"
 
           mkdir -p deployed-preview
@@ -479,7 +513,10 @@ jobs:
           for asset in \
             "${DIAL_MANIFEST_FILE}" \
             "${FRAME_MANIFEST_FILE}" \
+            "${DIAL_APPLICATION_FILE}" \
+            "${DIAL_LEGACY_APPLICATION_FILE}" \
             "${DIAL_FIRMWARE_FILE}" \
+            "${DIAL_LEGACY_FIRMWARE_FILE}" \
             "${FRAME_FIRMWARE_FILE}"; do
             curl --fail --silent --show-error --location \
               "${PREVIEW_BASE}/${asset}" \
@@ -490,15 +527,25 @@ jobs:
             "${FLASH_PAGE}" \
             "${DIAL_MANIFEST_FILE}" \
             "${FRAME_MANIFEST_FILE}" \
+            "${DIAL_APPLICATION_FILE}" \
+            "${DIAL_LEGACY_APPLICATION_FILE}" \
             "${DIAL_FIRMWARE_FILE}" \
+            "${DIAL_LEGACY_FIRMWARE_FILE}" \
             "${FRAME_FIRMWARE_FILE}"; do
             cmp "pr-preview/${asset}" "deployed-preview/${asset}"
           done
 
           echo "Verified exact deployed preview assets:"
           sha256sum \
+            "deployed-preview/${DIAL_APPLICATION_FILE}" \
+            "deployed-preview/${DIAL_LEGACY_APPLICATION_FILE}" \
             "deployed-preview/${DIAL_FIRMWARE_FILE}" \
+            "deployed-preview/${DIAL_LEGACY_FIRMWARE_FILE}" \
             "deployed-preview/${FRAME_FIRMWARE_FILE}"
+          cmp "deployed-preview/${DIAL_APPLICATION_FILE}" \
+            "deployed-preview/${DIAL_LEGACY_APPLICATION_FILE}"
+          cmp "deployed-preview/${DIAL_FIRMWARE_FILE}" \
+            "deployed-preview/${DIAL_LEGACY_FIRMWARE_FILE}"
 
       - name: Post preview URL to PR
         uses: actions/github-script@v8
@@ -522,7 +569,7 @@ jobs:
 
             const body = `### Firmware Previews
 
-            Flash this PR's Roon Knob or HiPhi Frame firmware directly in your browser:
+            Flash this PR's HiPhi Dial or HiPhi Frame firmware directly in your browser:
             **${previewUrl}**
 
             _Updated: ${new Date().toISOString()}_`;
@@ -574,7 +621,13 @@ jobs:
           cp web/flash.html gh-pages-build/
           cp web/manifest-s3.json gh-pages-build/
           cp web/manifest-frame.json gh-pages-build/
+          cp esp32s3-artifacts/idf_app/build/hiphi_dial.bin gh-pages-build/
+          cp esp32s3-artifacts/idf_app/build/roon_knob.bin gh-pages-build/
+          cmp gh-pages-build/hiphi_dial.bin gh-pages-build/roon_knob.bin
+          cp esp32s3-artifacts/hiphi_dial_merged.bin gh-pages-build/
           cp esp32s3-artifacts/roon_knob_merged.bin gh-pages-build/
+          cmp gh-pages-build/hiphi_dial_merged.bin \
+            gh-pages-build/roon_knob_merged.bin
           cp frame-artifacts/hiphi_frame_merged.bin gh-pages-build/
           echo "roon-knob.muness.com" > gh-pages-build/CNAME
           ls -la gh-pages-build/

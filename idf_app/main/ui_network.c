@@ -444,10 +444,10 @@ static void apply_evt_async(void *data) {
             ui_set_network_status("WiFi: Auth timeout");
             break;
         case RK_NET_EVT_AP_STARTED:
-            set_status_text("Setup: roon-knob-setup");
+            set_status_text("Setup: hiphi-dial-setup");
             set_ip_text("192.168.4.1");
             // Show setup instructions on main screen
-            ui_set_network_status("Setup: Connect to 'roon-knob-setup'");
+            ui_set_network_status("Setup: Connect to 'hiphi-dial-setup'");
             break;
         case RK_NET_EVT_AP_STOPPED:
             set_status_text("Connecting...");
