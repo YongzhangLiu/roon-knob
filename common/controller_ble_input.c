@@ -34,5 +34,8 @@ void controller_ble_input_on_media_key(rk_ble_media_key_t key, void *context) {
     if (!controller_input_post_control(intent)) {
         ESP_LOGW(TAG, "Controller input queue full; BLE media key %d dropped",
                  key);
+    } else {
+        ESP_LOGI(TAG, "BLE media key %d queued as control intent %d", key,
+                 intent);
     }
 }

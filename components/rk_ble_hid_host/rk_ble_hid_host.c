@@ -95,6 +95,7 @@ typedef struct {
             uint8_t data[16];
             uint16_t len;
             esp_hid_usage_t usage;
+            uint8_t report_id;
         } input;
         struct {
             uint8_t bda[6];
@@ -546,12 +547,21 @@ static void hidh_event(void *handler_args, esp_event_base_t base, int32_t id, vo
     case ESP_HIDH_INPUT_EVENT:
         event.type = EVENT_INPUT;
         event.data.input.usage = event_data_hidh->input.usage;
+        event.data.input.report_id = event_data_hidh->input.report_id;
         event.data.input.len = event_data_hidh->input.length;
         if (event.data.input.len > sizeof(event.data.input.data)) {
             event.data.input.len = sizeof(event.data.input.data);
         }
         if (event.data.input.len) {
             memcpy(event.data.input.data, event_data_hidh->input.data, event.data.input.len);
+        }
+        ESP_LOGI(TAG, "HID input usage=%s report_id=%u len=%u",
+                 esp_hid_usage_str(event.data.input.usage),
+                 (unsigned)event.data.input.report_id,
+                 (unsigned)event.data.input.len);
+        if (event.data.input.len) {
+            ESP_LOG_BUFFER_HEX_LEVEL(TAG, event.data.input.data,
+                                     event.data.input.len, ESP_LOG_INFO);
         }
         enqueue_event(&event);
         break;
@@ -584,15 +594,22 @@ static int scan_event(struct ble_gap_event *gap_event, void *arg) {
 
 static int gap_listener_event(struct ble_gap_event *gap_event, void *arg) {
     (void)arg;
-    if (gap_event->type == BLE_GAP_EVENT_CONNECT && gap_event->connect.status == 0) {
-        const int rc = ble_gap_security_initiate(gap_event->connect.conn_handle);
-        if (rc != 0 && rc != BLE_HS_EALREADY) {
-            ESP_LOGW(TAG, "security initiate failed: %d", rc);
+    if (gap_event->type == BLE_GAP_EVENT_ENC_CHANGE) {
+        struct ble_gap_conn_desc description;
+        if (ble_gap_conn_find(gap_event->enc_change.conn_handle,
+                              &description) == 0) {
+            ESP_LOGI(TAG,
+                     "Encryption change: status=%d encrypted=%d authenticated=%d bonded=%d",
+                     gap_event->enc_change.status,
+                     description.sec_state.encrypted,
+                     description.sec_state.authenticated,
+                     description.sec_state.bonded);
         }
     } else if (gap_event->type == BLE_GAP_EVENT_REPEAT_PAIRING) {
         struct ble_gap_conn_desc description;
         if (ble_gap_conn_find(gap_event->repeat_pairing.conn_handle, &description) == 0) {
             ble_store_util_delete_peer(&description.peer_id_addr);
+            ESP_LOGI(TAG, "Repeat pairing: removed stale peer bond");
         }
         return BLE_GAP_REPEAT_PAIRING_RETRY;
     }
@@ -691,6 +708,17 @@ static void start_stack(void) {
         return;
     }
     s.hidh_started = true;
+    /*
+     * ESP-IDF 5.5's NimBLE HID wrapper overwrites sm_io_cap with
+     * BLE_HS_IO_KEYBOARD_ONLY. Media remotes have no passkey-entry path, so
+     * restore the host's Just Works policy after the wrapper is initialized.
+     * The wrapper owns security initiation for its connection; the GAP
+     * listener below only observes encryption and handles stale bonds.
+     */
+    ble_hs_cfg.sm_bonding = 1;
+    ble_hs_cfg.sm_mitm = 0;
+    ble_hs_cfg.sm_sc = 1;
+    ble_hs_cfg.sm_io_cap = BLE_HS_IO_NO_INPUT_OUTPUT;
     log_memory("after esp_hidh_init");
     const int listener_rc =
         ble_gap_event_listener_register(&s.gap_listener, gap_listener_event, NULL);
@@ -1040,6 +1068,24 @@ static void process_discovery(const service_event_t *event) {
     publish_status();
 }
 
+static void finalize_open_connection(uint32_t generation) {
+    if (generation != s.opening_generation ||
+        generation != s.operation_generation || !s.have_active_bda ||
+        is_stopping() || s.status.connected) {
+        return;
+    }
+    s.reconnect_attempts = 0;
+    status_set_connection(true, s.opening_name);
+    if (nvs_save_bond(s.active_bda, s.opening_addr_type,
+                      s.opening_name) != ESP_OK) {
+        set_state(RK_BLE_HID_HOST_STATE_CONNECTED,
+                  RK_BLE_HID_HOST_ERROR_NVS);
+    } else {
+        set_state(RK_BLE_HID_HOST_STATE_CONNECTED,
+                  RK_BLE_HID_HOST_ERROR_NONE);
+    }
+}
+
 static void process_event(const service_event_t *event) {
     switch (event->type) {
     case EVENT_SYNC:
@@ -1083,7 +1129,6 @@ static void process_event(const service_event_t *event) {
         }
         memcpy(s.active_bda, event->data.open.bda, sizeof(s.active_bda));
         s.have_active_bda = true;
-        s.reconnect_attempts = 0;
         char resolved_name[RK_BLE_HID_HOST_NAME_MAX_LEN];
         if (event->data.open.name[0]) {
             copy_name(resolved_name, event->data.open.name);
@@ -1092,16 +1137,11 @@ static void process_event(const service_event_t *event) {
         } else {
             format_bda_name(resolved_name, event->data.open.bda);
         }
-        status_set_connection(true, resolved_name);
-        char active_name[RK_BLE_HID_HOST_NAME_MAX_LEN];
-        xSemaphoreTake(s.status_lock, portMAX_DELAY);
-        copy_name(active_name, s.status.active_name);
-        xSemaphoreGive(s.status_lock);
-        if (nvs_save_bond(event->data.open.bda, s.opening_addr_type,
-                          active_name) != ESP_OK) {
-            set_state(RK_BLE_HID_HOST_STATE_CONNECTED, RK_BLE_HID_HOST_ERROR_NVS);
-        } else {
-            set_state(RK_BLE_HID_HOST_STATE_CONNECTED, RK_BLE_HID_HOST_ERROR_NONE);
+        copy_name(s.opening_name, resolved_name);
+        /* OPEN is posted before IDF subscribes to report notifications. Only
+         * publish Connected after esp_hidh_dev_open() returns as well. */
+        if (!s.connect_worker_active) {
+            finalize_open_connection(s.opening_generation);
         }
         break;
     case EVENT_CONNECT_CALL_DONE: {
@@ -1115,6 +1155,8 @@ static void process_event(const service_event_t *event) {
                 s.connect_callback_pending = true;
                 s.connect_callback_generation =
                     event->data.connect_done.generation;
+            } else if (current) {
+                finalize_open_connection(event->data.connect_done.generation);
             }
         } else {
             s.connect_callback_pending = false;
@@ -1160,15 +1202,27 @@ static void process_event(const service_event_t *event) {
     case EVENT_INPUT: {
         rk_ble_media_key_t key;
         if (event->data.input.usage != ESP_HID_USAGE_CCONTROL) {
+            ESP_LOGI(TAG, "HID input ignored: usage=%s is not Consumer Control",
+                     esp_hid_usage_str(event->data.input.usage));
             break;
         }
         if (rk_ble_hid_host_map_consumer_report(
                 event->data.input.data, event->data.input.len, &key)) {
             if (s.config.on_media_key && s.status.connected && !is_stopping()) {
+                ESP_LOGI(TAG, "Consumer Control report mapped to media key %d",
+                         key);
                 s.config.on_media_key(key, s.config.callback_context);
+            } else {
+                ESP_LOGW(TAG,
+                         "Mapped media key %d dropped: connected=%d stopping=%d callback=%d",
+                         key, s.status.connected, is_stopping(),
+                         s.config.on_media_key != NULL);
             }
-        } else if (event->data.input.len >= 2) {
-            ESP_LOGD(TAG, "unknown Consumer Control report ignored");
+        } else {
+            ESP_LOGW(TAG,
+                     "Unmapped Consumer Control report_id=%u len=%u",
+                     (unsigned)event->data.input.report_id,
+                     (unsigned)event->data.input.len);
         }
         break;
     }

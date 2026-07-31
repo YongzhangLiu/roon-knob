@@ -521,9 +521,19 @@ static esp_err_t wifi_remove_handler(httpd_req_t *req) {
 
 static esp_err_t redirect_to_ble(httpd_req_t *req) {
     httpd_resp_set_status(req, "303 See Other");
-    httpd_resp_set_hdr(req, "Location", "/ble");
+    /* Force one follow-up refresh even if the owner task has not consumed the
+     * command before the browser follows this redirect. */
+    httpd_resp_set_hdr(req, "Location", "/ble?watch=1");
     httpd_resp_sendstr(req, "Redirecting...");
     return ESP_OK;
+}
+
+static bool ble_watch_requested(httpd_req_t *req) {
+    char query[32];
+    char watch[4];
+    return httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK &&
+           httpd_query_key_value(query, "watch", watch, sizeof(watch)) == ESP_OK &&
+           watch[0] == '1';
 }
 
 static bool ble_state_auto_updates(rk_ble_hid_host_state_t state) {
@@ -593,7 +603,8 @@ static esp_err_t ble_get_handler(httpd_req_t *req) {
         state_title = "Turning off Bluetooth";
         state_detail = "The remote service is shutting down.";
     }
-    const bool auto_updates = ble_state_auto_updates(status.state);
+    const bool auto_updates = ble_watch_requested(req) ||
+                              ble_state_auto_updates(status.state);
 
     int pos = snprintf(
         html, html_size,
@@ -633,7 +644,8 @@ static esp_err_t ble_get_handler(httpd_req_t *req) {
         "<input type='hidden' name='enabled' value='%d'>"
         "<button type='submit' class='%s'>%s</button></form>",
         auto_updates
-            ? "<script>setTimeout(function(){if(!document.hidden)location.reload()},2000);"
+            ? "<script>if(location.search)history.replaceState(null,'','/ble');"
+              "setTimeout(function(){if(!document.hidden)location.reload()},1000);"
               "document.addEventListener('visibilitychange',function(){if(!document.hidden)location.reload()});</script>"
             : "",
         state_class, state_title, state_detail,

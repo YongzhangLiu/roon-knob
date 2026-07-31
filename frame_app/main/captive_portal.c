@@ -812,7 +812,14 @@ static esp_err_t sta_ble_handler(httpd_req_t *req) {
     return ESP_FAIL;
   }
   bool scanning = status.state == RK_BLE_HID_HOST_STATE_SCANNING;
-  bool auto_updates = scanning ||
+  char watch_query[32] = "";
+  char watch_value[4] = "";
+  bool watch_requested =
+      httpd_req_get_url_query_str(req, watch_query, sizeof(watch_query)) == ESP_OK &&
+      httpd_query_key_value(watch_query, "watch", watch_value,
+                            sizeof(watch_value)) == ESP_OK &&
+      watch_value[0] == '1';
+  bool auto_updates = watch_requested || scanning ||
       status.state == RK_BLE_HID_HOST_STATE_STARTING ||
       status.state == RK_BLE_HID_HOST_STATE_CONNECTING ||
       status.state == RK_BLE_HID_HOST_STATE_STOPPING;
@@ -854,7 +861,8 @@ static esp_err_t sta_ble_handler(httpd_req_t *req) {
     STA_CSS,
     FAVICON_LINK,
     auto_updates
-      ? "<script>setTimeout(function(){if(!document.hidden)location.reload()},2000);"
+      ? "<script>if(location.search)history.replaceState(null,'','/ble');"
+        "setTimeout(function(){if(!document.hidden)location.reload()},1000);"
         "document.addEventListener('visibilitychange',function(){if(!document.hidden)location.reload()});</script>"
       : "",
     esc_bridge_url[0] ? "<a href='" : "",
@@ -984,7 +992,7 @@ static esp_err_t sta_ble_scan_handler(httpd_req_t *req) {
   }
   // Redirect back after short delay to allow scan to start
   httpd_resp_set_status(req, "302 Found");
-  httpd_resp_set_hdr(req, "Location", "/ble");
+  httpd_resp_set_hdr(req, "Location", "/ble?watch=1");
   httpd_resp_send(req, NULL, 0);
   return ESP_OK;
 }
@@ -1040,7 +1048,7 @@ static esp_err_t sta_ble_pair_handler(httpd_req_t *req) {
   }
 
   httpd_resp_set_status(req, "302 Found");
-  httpd_resp_set_hdr(req, "Location", "/ble");
+  httpd_resp_set_hdr(req, "Location", "/ble?watch=1");
   httpd_resp_send(req, NULL, 0);
   return ESP_OK;
 }
@@ -1053,7 +1061,7 @@ static esp_err_t sta_ble_unpair_handler(httpd_req_t *req) {
   }
 
   httpd_resp_set_status(req, "302 Found");
-  httpd_resp_set_hdr(req, "Location", "/ble");
+  httpd_resp_set_hdr(req, "Location", "/ble?watch=1");
   httpd_resp_send(req, NULL, 0);
   return ESP_OK;
 }
@@ -1081,7 +1089,7 @@ static esp_err_t sta_ble_enable_handler(httpd_req_t *req) {
   }
 
   httpd_resp_set_status(req, "302 Found");
-  httpd_resp_set_hdr(req, "Location", "/ble");
+  httpd_resp_set_hdr(req, "Location", "/ble?watch=1");
   httpd_resp_send(req, NULL, 0);
   return ESP_OK;
 }

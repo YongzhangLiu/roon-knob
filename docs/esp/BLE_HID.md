@@ -46,10 +46,20 @@ Both targets expose scan, pair, connection status, disable, and forget
 operations through target-owned settings. Display code remains target-specific;
 the shared Bluetooth component never calls e-ink or LVGL APIs.
 
+Those settings commands are asynchronous. Each form action redirects through a
+one-shot watch URL so the browser refreshes after the owner task consumes the
+command, even when the first redirected GET still sees the previous steady
+state. Transitional states continue refreshing until they settle.
+
 ## Lifecycle
 
 The shared `rk_ble_hid_host` component owns NimBLE and `esp_hid` behind one
 serialized command queue. Its public lifecycle is:
+
+ESP-IDF posts its HID open callback before it finishes CCCD subscriptions.
+The shared owner therefore keeps the public state at `CONNECTING` until both
+that callback arrives and the blocking `esp_hidh_dev_open()` call returns.
+`CONNECTED` means media-report notifications are actually configured.
 
 ```
 UNAVAILABLE -> DISABLED -> STARTING -> READY
@@ -84,6 +94,13 @@ local remembered-device metadata, and deletes the NimBLE peer security record.
 Pairing uses the BLE “Just Works” security model because these controllers and
 typical media remotes have no shared display/PIN-entry path. The bond is kept
 in NVS so the host can reconnect after restart.
+
+ESP-IDF 5.5's NimBLE HID wrapper changes the host I/O capability to keyboard
+input during initialization. The shared host restores `NO_INPUT_OUTPUT`
+after `esp_hidh_init()` and leaves connection security initiation to the HID
+wrapper. A separate GAP listener observes encryption completion and handles
+repeat pairing by deleting a stale peer bond; it must not start a competing
+security procedure.
 
 ## Build configuration
 
