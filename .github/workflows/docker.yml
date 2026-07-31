@@ -361,6 +361,9 @@ jobs:
           path: |
             idf_app/build/hiphi_dial.bin
             idf_app/build/roon_knob.bin
+            idf_app/build/bootloader/bootloader.bin
+            idf_app/build/partition_table/partition-table.bin
+            idf_app/build/ota_data_initial.bin
             hiphi_dial_merged.bin
             roon_knob_merged.bin
           retention-days: 30
@@ -456,6 +459,9 @@ jobs:
           name: hiphi-frame-firmware
           path: |
             frame_app/build/hiphi_frame.bin
+            frame_app/build/bootloader/bootloader.bin
+            frame_app/build/partition_table/partition-table.bin
+            frame_app/build/ota_data_initial.bin
             hiphi_frame_merged.bin
           retention-days: 30
 
@@ -553,12 +559,24 @@ jobs:
           mkdir -p release-assets
           cp esp32s3-artifacts/idf_app/build/hiphi_dial.bin release-assets/
           cp esp32s3-artifacts/idf_app/build/roon_knob.bin release-assets/
+          cp esp32s3-artifacts/idf_app/build/bootloader/bootloader.bin \
+            release-assets/hiphi_dial_bootloader.bin
+          cp esp32s3-artifacts/idf_app/build/partition_table/partition-table.bin \
+            release-assets/hiphi_dial_partition-table.bin
+          cp esp32s3-artifacts/idf_app/build/ota_data_initial.bin \
+            release-assets/hiphi_dial_ota_data_initial.bin
           cp esp32s3-artifacts/hiphi_dial_merged.bin release-assets/
           cp esp32s3-artifacts/roon_knob_merged.bin release-assets/
           cmp release-assets/hiphi_dial.bin release-assets/roon_knob.bin
           cmp release-assets/hiphi_dial_merged.bin \
             release-assets/roon_knob_merged.bin
           cp frame-artifacts/frame_app/build/hiphi_frame.bin release-assets/
+          cp frame-artifacts/frame_app/build/bootloader/bootloader.bin \
+            release-assets/hiphi_frame_bootloader.bin
+          cp frame-artifacts/frame_app/build/partition_table/partition-table.bin \
+            release-assets/hiphi_frame_partition-table.bin
+          cp frame-artifacts/frame_app/build/ota_data_initial.bin \
+            release-assets/hiphi_frame_ota_data_initial.bin
           cp frame-artifacts/hiphi_frame_merged.bin release-assets/
           ls -la release-assets/
 
@@ -591,10 +609,16 @@ jobs:
           prerelease: ${{ contains(github.ref, '-') }}
           files: |
             release-assets/hiphi_dial.bin
+            release-assets/hiphi_dial_bootloader.bin
+            release-assets/hiphi_dial_partition-table.bin
+            release-assets/hiphi_dial_ota_data_initial.bin
             release-assets/hiphi_dial_merged.bin
             release-assets/roon_knob.bin
             release-assets/roon_knob_merged.bin
             release-assets/hiphi_frame.bin
+            release-assets/hiphi_frame_bootloader.bin
+            release-assets/hiphi_frame_partition-table.bin
+            release-assets/hiphi_frame_ota_data_initial.bin
             release-assets/hiphi_frame_merged.bin
           body_path: final_body.md
 
@@ -652,10 +676,17 @@ jobs:
           DIAL_MANIFEST_FILE="manifest-s3-${PREVIEW_ID}.json"
           FRAME_MANIFEST_FILE="manifest-frame-${PREVIEW_ID}.json"
           DIAL_APPLICATION_FILE="hiphi_dial-${PREVIEW_ID}.bin"
+          DIAL_BOOTLOADER_FILE="hiphi_dial_bootloader-${PREVIEW_ID}.bin"
+          DIAL_PARTITION_FILE="hiphi_dial_partition-table-${PREVIEW_ID}.bin"
+          DIAL_OTA_DATA_FILE="hiphi_dial_ota_data_initial-${PREVIEW_ID}.bin"
           DIAL_LEGACY_APPLICATION_FILE="roon_knob-${PREVIEW_ID}.bin"
           DIAL_FIRMWARE_FILE="hiphi_dial_merged-${PREVIEW_ID}.bin"
           DIAL_LEGACY_FIRMWARE_FILE="roon_knob_merged-${PREVIEW_ID}.bin"
           FRAME_FIRMWARE_FILE="hiphi_frame_merged-${PREVIEW_ID}.bin"
+          FRAME_APPLICATION_FILE="hiphi_frame-${PREVIEW_ID}.bin"
+          FRAME_BOOTLOADER_FILE="hiphi_frame_bootloader-${PREVIEW_ID}.bin"
+          FRAME_PARTITION_FILE="hiphi_frame_partition-table-${PREVIEW_ID}.bin"
+          FRAME_OTA_DATA_FILE="hiphi_frame_ota_data_initial-${PREVIEW_ID}.bin"
           FLASH_PAGE="flash-${PREVIEW_ID}.html"
           DIAL_FLASH_PAGE="flash-dial-${PREVIEW_ID}.html"
           FRAME_FLASH_PAGE="flash-frame-${PREVIEW_ID}.html"
@@ -663,6 +694,12 @@ jobs:
           # Use immutable names so an older preview can never flash a newer build.
           cp esp32s3-artifacts/idf_app/build/hiphi_dial.bin \
             "pr-preview/${DIAL_APPLICATION_FILE}"
+          cp esp32s3-artifacts/idf_app/build/bootloader/bootloader.bin \
+            "pr-preview/${DIAL_BOOTLOADER_FILE}"
+          cp esp32s3-artifacts/idf_app/build/partition_table/partition-table.bin \
+            "pr-preview/${DIAL_PARTITION_FILE}"
+          cp esp32s3-artifacts/idf_app/build/ota_data_initial.bin \
+            "pr-preview/${DIAL_OTA_DATA_FILE}"
           cp esp32s3-artifacts/idf_app/build/roon_knob.bin \
             "pr-preview/${DIAL_LEGACY_APPLICATION_FILE}"
           cmp "pr-preview/${DIAL_APPLICATION_FILE}" \
@@ -675,6 +712,14 @@ jobs:
             "pr-preview/${DIAL_LEGACY_FIRMWARE_FILE}"
           cp frame-artifacts/hiphi_frame_merged.bin \
             "pr-preview/${FRAME_FIRMWARE_FILE}"
+          cp frame-artifacts/frame_app/build/hiphi_frame.bin \
+            "pr-preview/${FRAME_APPLICATION_FILE}"
+          cp frame-artifacts/frame_app/build/bootloader/bootloader.bin \
+            "pr-preview/${FRAME_BOOTLOADER_FILE}"
+          cp frame-artifacts/frame_app/build/partition_table/partition-table.bin \
+            "pr-preview/${FRAME_PARTITION_FILE}"
+          cp frame-artifacts/frame_app/build/ota_data_initial.bin \
+            "pr-preview/${FRAME_OTA_DATA_FILE}"
 
           # Immutable preview paths avoid stale GitHub Pages CDN entries.
           cat > "pr-preview/${DIAL_MANIFEST_FILE}" << EOF
@@ -684,10 +729,12 @@ jobs:
             "new_install_prompt_erase": true,
             "builds": [{
               "chipFamily": "ESP32-S3",
-              "parts": [{
-                "path": "${DIAL_FIRMWARE_FILE}",
-                "offset": 0
-              }]
+              "parts": [
+                { "path": "${DIAL_BOOTLOADER_FILE}", "offset": 0 },
+                { "path": "${DIAL_PARTITION_FILE}", "offset": 32768 },
+                { "path": "${DIAL_OTA_DATA_FILE}", "offset": 53248 },
+                { "path": "${DIAL_APPLICATION_FILE}", "offset": 65536 }
+              ]
             }]
           }
           EOF
@@ -699,10 +746,12 @@ jobs:
             "new_install_prompt_erase": true,
             "builds": [{
               "chipFamily": "ESP32-S3",
-              "parts": [{
-                "path": "${FRAME_FIRMWARE_FILE}",
-                "offset": 0
-              }]
+              "parts": [
+                { "path": "${FRAME_BOOTLOADER_FILE}", "offset": 0 },
+                { "path": "${FRAME_PARTITION_FILE}", "offset": 32768 },
+                { "path": "${FRAME_OTA_DATA_FILE}", "offset": 53248 },
+                { "path": "${FRAME_APPLICATION_FILE}", "offset": 65536 }
+              ]
             }]
           }
           EOF
@@ -721,6 +770,11 @@ jobs:
               -e "s|manifest-frame.json|${FRAME_MANIFEST_FILE}|g" \
               web/flash-pr.html > "pr-preview/${TARGET_PAGE}"
           done
+
+          python3 scripts/check_flash_manifest.py \
+            "pr-preview/${DIAL_MANIFEST_FILE}" --assets-dir pr-preview
+          python3 scripts/check_flash_manifest.py \
+            "pr-preview/${FRAME_MANIFEST_FILE}" --assets-dir pr-preview
 
           echo "PR preview contents:"
           ls -la pr-preview/
@@ -746,10 +800,17 @@ jobs:
           DIAL_MANIFEST_FILE="manifest-s3-${PREVIEW_ID}.json"
           FRAME_MANIFEST_FILE="manifest-frame-${PREVIEW_ID}.json"
           DIAL_APPLICATION_FILE="hiphi_dial-${PREVIEW_ID}.bin"
+          DIAL_BOOTLOADER_FILE="hiphi_dial_bootloader-${PREVIEW_ID}.bin"
+          DIAL_PARTITION_FILE="hiphi_dial_partition-table-${PREVIEW_ID}.bin"
+          DIAL_OTA_DATA_FILE="hiphi_dial_ota_data_initial-${PREVIEW_ID}.bin"
           DIAL_LEGACY_APPLICATION_FILE="roon_knob-${PREVIEW_ID}.bin"
           DIAL_FIRMWARE_FILE="hiphi_dial_merged-${PREVIEW_ID}.bin"
           DIAL_LEGACY_FIRMWARE_FILE="roon_knob_merged-${PREVIEW_ID}.bin"
           FRAME_FIRMWARE_FILE="hiphi_frame_merged-${PREVIEW_ID}.bin"
+          FRAME_APPLICATION_FILE="hiphi_frame-${PREVIEW_ID}.bin"
+          FRAME_BOOTLOADER_FILE="hiphi_frame_bootloader-${PREVIEW_ID}.bin"
+          FRAME_PARTITION_FILE="hiphi_frame_partition-table-${PREVIEW_ID}.bin"
+          FRAME_OTA_DATA_FILE="hiphi_frame_ota_data_initial-${PREVIEW_ID}.bin"
 
           mkdir -p deployed-preview
 
@@ -774,10 +835,17 @@ jobs:
             "${DIAL_MANIFEST_FILE}" \
             "${FRAME_MANIFEST_FILE}" \
             "${DIAL_APPLICATION_FILE}" \
+            "${DIAL_BOOTLOADER_FILE}" \
+            "${DIAL_PARTITION_FILE}" \
+            "${DIAL_OTA_DATA_FILE}" \
             "${DIAL_LEGACY_APPLICATION_FILE}" \
             "${DIAL_FIRMWARE_FILE}" \
             "${DIAL_LEGACY_FIRMWARE_FILE}" \
-            "${FRAME_FIRMWARE_FILE}"; do
+            "${FRAME_FIRMWARE_FILE}" \
+            "${FRAME_APPLICATION_FILE}" \
+            "${FRAME_BOOTLOADER_FILE}" \
+            "${FRAME_PARTITION_FILE}" \
+            "${FRAME_OTA_DATA_FILE}"; do
             curl --fail --silent --show-error --location \
               "${PREVIEW_BASE}/${asset}" \
               --output "deployed-preview/${asset}"
@@ -790,10 +858,17 @@ jobs:
             "${DIAL_MANIFEST_FILE}" \
             "${FRAME_MANIFEST_FILE}" \
             "${DIAL_APPLICATION_FILE}" \
+            "${DIAL_BOOTLOADER_FILE}" \
+            "${DIAL_PARTITION_FILE}" \
+            "${DIAL_OTA_DATA_FILE}" \
             "${DIAL_LEGACY_APPLICATION_FILE}" \
             "${DIAL_FIRMWARE_FILE}" \
             "${DIAL_LEGACY_FIRMWARE_FILE}" \
-            "${FRAME_FIRMWARE_FILE}"; do
+            "${FRAME_FIRMWARE_FILE}" \
+            "${FRAME_APPLICATION_FILE}" \
+            "${FRAME_BOOTLOADER_FILE}" \
+            "${FRAME_PARTITION_FILE}" \
+            "${FRAME_OTA_DATA_FILE}"; do
             cmp "pr-preview/${asset}" "deployed-preview/${asset}"
           done
 
@@ -802,14 +877,18 @@ jobs:
             "deployed-preview/${DIAL_FLASH_PAGE}"
           grep -F 'data-target-filter="frame"' \
             "deployed-preview/${FRAME_FLASH_PAGE}"
-          grep -F "\"path\": \"${DIAL_FIRMWARE_FILE}\"" \
+          grep -F "\"path\": \"${DIAL_APPLICATION_FILE}\"" \
             "deployed-preview/${DIAL_MANIFEST_FILE}"
-          ! grep -F "${FRAME_FIRMWARE_FILE}" \
+          ! grep -F "${FRAME_APPLICATION_FILE}" \
             "deployed-preview/${DIAL_MANIFEST_FILE}"
-          grep -F "\"path\": \"${FRAME_FIRMWARE_FILE}\"" \
+          grep -F "\"path\": \"${FRAME_APPLICATION_FILE}\"" \
             "deployed-preview/${FRAME_MANIFEST_FILE}"
-          ! grep -F "${DIAL_FIRMWARE_FILE}" \
+          ! grep -F "${DIAL_APPLICATION_FILE}" \
             "deployed-preview/${FRAME_MANIFEST_FILE}"
+          python3 scripts/check_flash_manifest.py \
+            "deployed-preview/${DIAL_MANIFEST_FILE}" --assets-dir deployed-preview
+          python3 scripts/check_flash_manifest.py \
+            "deployed-preview/${FRAME_MANIFEST_FILE}" --assets-dir deployed-preview
           sha256sum \
             "deployed-preview/${DIAL_APPLICATION_FILE}" \
             "deployed-preview/${DIAL_LEGACY_APPLICATION_FILE}" \
@@ -937,6 +1016,12 @@ jobs:
           cp web/manifest-s3.json gh-pages-build/
           cp web/manifest-frame.json gh-pages-build/
           cp esp32s3-artifacts/idf_app/build/hiphi_dial.bin gh-pages-build/
+          cp esp32s3-artifacts/idf_app/build/bootloader/bootloader.bin \
+            gh-pages-build/hiphi_dial_bootloader.bin
+          cp esp32s3-artifacts/idf_app/build/partition_table/partition-table.bin \
+            gh-pages-build/hiphi_dial_partition-table.bin
+          cp esp32s3-artifacts/idf_app/build/ota_data_initial.bin \
+            gh-pages-build/hiphi_dial_ota_data_initial.bin
           cp esp32s3-artifacts/idf_app/build/roon_knob.bin gh-pages-build/
           cmp gh-pages-build/hiphi_dial.bin gh-pages-build/roon_knob.bin
           cp esp32s3-artifacts/hiphi_dial_merged.bin gh-pages-build/
@@ -944,6 +1029,17 @@ jobs:
           cmp gh-pages-build/hiphi_dial_merged.bin \
             gh-pages-build/roon_knob_merged.bin
           cp frame-artifacts/hiphi_frame_merged.bin gh-pages-build/
+          cp frame-artifacts/frame_app/build/hiphi_frame.bin gh-pages-build/
+          cp frame-artifacts/frame_app/build/bootloader/bootloader.bin \
+            gh-pages-build/hiphi_frame_bootloader.bin
+          cp frame-artifacts/frame_app/build/partition_table/partition-table.bin \
+            gh-pages-build/hiphi_frame_partition-table.bin
+          cp frame-artifacts/frame_app/build/ota_data_initial.bin \
+            gh-pages-build/hiphi_frame_ota_data_initial.bin
+          python3 scripts/check_flash_manifest.py \
+            gh-pages-build/manifest-s3.json --assets-dir gh-pages-build
+          python3 scripts/check_flash_manifest.py \
+            gh-pages-build/manifest-frame.json --assets-dir gh-pages-build
           echo "roon-knob.muness.com" > gh-pages-build/CNAME
           ls -la gh-pages-build/
 

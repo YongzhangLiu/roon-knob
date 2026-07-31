@@ -183,7 +183,7 @@
     },
     {
       "path": "web/manifest-s3.json",
-      "contains": "\"path\": \"hiphi_dial_merged.bin\""
+      "contains": "\"path\": \"hiphi_dial.bin\""
     },
     {
       "path": ".github/workflows/docker.yml",
@@ -257,7 +257,7 @@
     },
     {
       "path": "docs/usage/FIRMWARE_FLASHING.md",
-      "contains": "Click **\"Flash HiPhi Dial\"**"
+      "contains": "Click **\"Update HiPhi Dial\"**"
     },
     {
       "path": "docs/usage/GETTING_STARTED.md",
