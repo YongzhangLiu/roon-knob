@@ -119,7 +119,10 @@ rk_ble_hid_host_result_t rk_ble_hid_host_forget(void);
 /** Copy the current status without exposing service-owned storage. */
 rk_ble_hid_host_result_t rk_ble_hid_host_status_copy(rk_ble_hid_host_status_t *out);
 
-/** Pure Consumer Control mapping: false for releases, unknown, and short reports. */
+/**
+ * Pure payload mapping independent of ESP-IDF's report usage classification.
+ * Returns false for releases, unknown usages, and short reports.
+ */
 bool rk_ble_hid_host_map_consumer_report(const uint8_t *data, size_t len,
                                          rk_ble_media_key_t *key);
 

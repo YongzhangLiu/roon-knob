@@ -128,8 +128,13 @@ translation unit.
 On hardware, a successful open should proceed from
 `Skipping optional Battery Service notification subscription` through the HID
 CCCD writes to `CONNECTED`. A button press must then produce a raw HID input
-log and a mapped Consumer Control action. Discovery and encryption alone are
-not sufficient evidence that the remote is usable.
+log and a mapped Consumer Control action. ESP-IDF 5.5 may label that event's
+usage as `GENERIC` even when its bytes contain a standard Consumer Control
+usage. The shared host therefore follows the proven Frame behavior and decodes
+the payload itself: only the explicitly supported media usages are accepted,
+regardless of the wrapper's metadata; zero/release and all unknown payloads are
+still ignored. Discovery and encryption alone are not sufficient evidence that
+the remote is usable.
 
 ## Build configuration
 

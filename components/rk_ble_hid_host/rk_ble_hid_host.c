@@ -1201,13 +1201,21 @@ static void process_event(const service_event_t *event) {
         break;
     case EVENT_INPUT: {
         rk_ble_media_key_t key;
-        if (event->data.input.usage != ESP_HID_USAGE_CCONTROL) {
-            ESP_LOGI(TAG, "HID input ignored: usage=%s is not Consumer Control",
-                     esp_hid_usage_str(event->data.input.usage));
-            break;
-        }
-        if (rk_ble_hid_host_map_consumer_report(
-                event->data.input.data, event->data.input.len, &key)) {
+        const bool mapped = rk_ble_hid_host_map_consumer_report(
+            event->data.input.data, event->data.input.len, &key);
+
+        /* ESP-IDF 5.5 can classify a valid Consumer Control report as GENERIC
+         * when its HID report-map metadata is incomplete. The proven Frame
+         * implementation decoded the payload directly. Preserve that behavior,
+         * but only for the exact media usages accepted by the bounded mapper. */
+        if (mapped) {
+            if (event->data.input.usage != ESP_HID_USAGE_CCONTROL) {
+                ESP_LOGW(TAG,
+                         "Mapped media report despite ESP-IDF usage=%s "
+                         "report_id=%u",
+                         esp_hid_usage_str(event->data.input.usage),
+                         (unsigned)event->data.input.report_id);
+            }
             if (s.config.on_media_key && s.status.connected && !is_stopping()) {
                 ESP_LOGI(TAG, "Consumer Control report mapped to media key %d",
                          key);
@@ -1218,6 +1226,10 @@ static void process_event(const service_event_t *event) {
                          key, s.status.connected, is_stopping(),
                          s.config.on_media_key != NULL);
             }
+        } else if (event->data.input.usage != ESP_HID_USAGE_CCONTROL) {
+            ESP_LOGI(TAG,
+                     "HID input ignored: unrecognized payload with usage=%s",
+                     esp_hid_usage_str(event->data.input.usage));
         } else {
             ESP_LOGW(TAG,
                      "Unmapped Consumer Control report_id=%u len=%u",
