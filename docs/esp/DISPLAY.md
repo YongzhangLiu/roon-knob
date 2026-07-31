@@ -44,6 +44,21 @@ The SH8601 is an LCD driver IC that accepts pixel data over Quad SPI, allowing f
 
 [LVGL](https://lvgl.io/) is a graphics library designed for embedded systems. It provides widgets (buttons, labels, arcs, etc.) and handles rendering to a framebuffer. The firmware uses LVGL 9.x.
 
+### UI task ownership and diagnostics
+
+All LVGL work runs from the dedicated `ui_loop` task, pinned to core 1 with a
+32 KiB internal-RAM stack. Wi-Fi and NimBLE execute on core 0. This division is
+intentional: the display needs DMA-capable internal RAM and predictable UI
+scheduling, while the radio stacks contend for the other core.
+
+The task is created before Wi-Fi starts because Wi-Fi event paths defer UI work
+through LVGL. Task creation is checked; a failure logs the available and
+largest internal heap blocks instead of continuing with a display that can
+never refresh. Boot telemetry records memory around display allocation and UI
+initialization, and `ui_loop` logs its stack high-water mark. A static screen
+should therefore be investigated as a task/lifecycle or memory problem first,
+not treated as an expected provisioning state.
+
 ### How LVGL Works
 
 LVGL maintains an internal scene graph of widgets. When something changes (text update, animation frame, etc.), LVGL marks affected regions as "dirty". On each frame:

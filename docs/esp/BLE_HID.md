@@ -107,6 +107,69 @@ component-discovery set, so it cannot silently win link-order resolution in a
 Bluetooth-enabled artifact. Targets opt into that directory explicitly. CI
 builds an ESP32-S3 fixture for this profile.
 
+### Production-link invariant
+
+The production targets must link `rk_ble_hid_host.c`; a stub that merely
+returns `UNAVAILABLE` is only valid for an explicit BLE-disabled target. This
+is easy to get wrong because ESP-IDF discovers top-level components by
+directory. The optional stub therefore lives outside that discovery set and a
+BLE-disabled target names it explicitly.
+
+CI enforces both sides of the contract from the generated build files and link
+map:
+
+- Dial and Frame compile the real host and resolve `rk_ble_hid_host_init` from
+  its object file;
+- neither production map contains the stub; and
+- the BLE-off fixture links only the stub and no NimBLE or `esp_hid` object.
+
+Do not accept a green compile alone as evidence that a BLE build contains the
+real implementation.
+
+### Resource and scheduler budget
+
+Dial shares internal RAM and radio time between an LVGL/QSPI display, Wi-Fi,
+and NimBLE. The shipping profile is intentionally narrow:
+
+| Resource | Production setting | Reason |
+| --- | --- | --- |
+| Active connections | 1 | One paired media remote is the product requirement. |
+| Preferred ATT MTU | 128 bytes | Consumer-control reports do not need the former 256-byte default. |
+| NimBLE mbuf/ACL/event pools | Reduced to the single-remote budget | Avoid reserving internal heap for unused throughput and links. |
+| NimBLE dynamic allocations | PSRAM (`MEM_ALLOC_MODE_EXTERNAL`) | Protects internal/DMA heap needed by LVGL and display DMA. |
+| UI task | Core 1, 32 KiB internal stack | Keeps rendering and its stack away from radio work. |
+| NimBLE host/service tasks | Core 0, internal stacks | Co-locates BLE with the Wi-Fi task while retaining cache-safe stacks. |
+| Wi-Fi task | Core 0 | Explicit ESP-IDF configuration. |
+
+Task stacks are deliberately **not** moved to PSRAM. ESP-IDF can disable cache
+during flash, NVS, and OTA operations; execution stacks used by those paths
+must remain internal. “Use PSRAM for NimBLE” means NimBLE's dynamic pools, not
+every allocation associated with BLE.
+
+ESP-IDF's current `esp_hid` BLE-host wrapper has a non-obvious configuration
+dependency: its symbols are compiled behind `BT_NIMBLE_HID_SERVICE`, which in
+turn requires the NimBLE GATT-server and peripheral switches. They remain
+enabled solely to satisfy that wrapper even though the application does not
+advertise a local HID device. Broadcaster and unrelated standard services stay
+disabled. The persistent bond store is set to two entries: ESP-IDF 5.5's
+one-entry configuration triggers an out-of-bounds compiler diagnostic in its
+sorting implementation. This does not increase the one-active-connection
+limit.
+
+### Instrumented coexistence checks
+
+Boot logs report internal/DMA/PSRAM free space and largest blocks after display
+allocation, UI initialization, UI-task creation, bridge start, and BLE-host
+initialization. They also report early and periodic stack high-water marks and
+the actual core for the UI, BLE service, and NimBLE host tasks.
+
+When diagnosing a static Dial display, first establish whether the log reaches
+`UI loop task started on core 1`. The pre-BLE portion of boot is already a
+useful test: the HID service is created only after Wi-Fi obtains an IP, so a
+static display before provisioning does not prove an active BLE connection is
+the immediate cause. Compare the before/after UI and BLE memory checkpoints,
+then test BLE pairing separately after the UI loop is healthy.
+
 ## Coexistence verification
 
 ESP32-S3 shares its 2.4 GHz radio between Wi-Fi and BLE. A successful compile
