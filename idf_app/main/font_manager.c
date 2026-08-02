@@ -24,6 +24,7 @@ extern const lv_font_t material_icons_28;
 extern const lv_font_t material_icons_44;
 extern const lv_font_t material_icons_60;
 extern const lv_font_t lucide_battery_22;
+extern const lv_font_t cjk_22;
 
 static bool s_initialized = false;
 
