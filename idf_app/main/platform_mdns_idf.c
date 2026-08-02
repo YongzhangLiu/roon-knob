@@ -88,16 +88,18 @@ bool platform_mdns_discover_base_url(char *out, size_t len) {
         count++;
         ESP_LOGI(TAG, "mDNS result %d: hostname=%s port=%d txt_count=%zu",
                  count, r->hostname ? r->hostname : "(null)", r->port, r->txt_count);
-        if (!found && txt_find_base(r, url, sizeof(url))) {
-            ESP_LOGI(TAG, "  Found base TXT: %s", url);
-            found = true;
-        }
-        // Prefer IP address over hostname - ESP32 lwIP has issues resolving .local hostnames
+        // Prefer IP address over TXT base URL — ESP32 lwIP cannot resolve bare hostnames
+        // and TXT base may contain non-resolvable hostnames (e.g. Z4ProPlus-6CR0 without .local)
         if (!found && r->addr && r->port) {
             char ip_str[16];
             snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&r->addr->addr.u_addr.ip4));
             snprintf(url, sizeof(url), "http://%s:%u", ip_str, r->port);
             ESP_LOGI(TAG, "  Using IP:port: %s (hostname=%s)", url, r->hostname ? r->hostname : "(null)");
+            found = true;
+        }
+        // Fall back to TXT base URL only if no IP address available
+        if (!found && txt_find_base(r, url, sizeof(url))) {
+            ESP_LOGI(TAG, "  Found base TXT: %s", url);
             found = true;
         }
     }
