@@ -6,10 +6,10 @@
 
 #ifdef LV_LVGL_H_INCLUDE_SIMPLE
 #include "lvgl.h"
-extern const lv_font_t material_icons_28;
 #else
-#include "lvgl/lvgl.h"
+#include "lvgl.h"
 #endif
+extern const lv_font_t material_icons_28;
 
 #ifndef CJK_1280
 #define CJK_1280 1
