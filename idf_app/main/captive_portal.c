@@ -44,12 +44,14 @@ static const char *HTML_FORM =
     "<input type='text' name='ssid' required maxlength='32' placeholder='Your WiFi name'>"
     "<label>Password</label>"
     "<input type='password' name='pass' maxlength='64' placeholder='WiFi password'>"
+    "<input type='hidden' name='enc' value=''>"
     "<input type='submit' value='Connect'>"
     "</form>"
     "<div class='note'>"
     "<strong>Note:</strong> To use this with Roon, you'll need to set up the Roon Bridge. "
     "See <a href='https://github.com/muness/roon-knob' target='_blank'>github.com/muness/roon-knob</a> for details."
     "</div>"
+    "<script>var f=document.querySelector('form');f.addEventListener('submit',function(){var s=f.querySelector('[name=ssid]'),e=f.querySelector('[name=enc]'),b=new TextEncoder().encode(s.value),h='';for(var i=0;i<b.length;i++)h+=b[i].toString(16).padStart(2,'0');s.value=h;e.value='hex';});</script>"
     "</body></html>";
 
 static const char *HTML_SUCCESS =
@@ -94,6 +96,23 @@ static void url_decode(char *str) {
         }
     }
     *dst = '\0';
+}
+
+// ponytail: hex-decode SSID from client-side encoding, bypasses URL encoding issues with non-ASCII characters
+static void hex_decode(char *str) {
+    if (!str) return;
+    char tmp[128];
+    size_t j = 0;
+    size_t len = strlen(str);
+    for (size_t i = 0; i + 1 < len && j < sizeof(tmp) - 1; i += 2) {
+        char hex[3] = {str[i], str[i+1], 0};
+        char *end;
+        long val = strtol(hex, &end, 16);
+        if (end != hex + 2) break; // ponytail: non-hex char found, stop
+        tmp[j++] = (char)val;
+    }
+    tmp[j] = '\0';
+    memcpy(str, tmp, j + 1);
 }
 
 // Parse form data to extract a field value
@@ -165,6 +184,13 @@ static esp_err_t configure_get_handler(httpd_req_t *req) {
 
     // Password is optional (for open networks)
     get_form_field(buf, "pass", pass, sizeof(pass));
+
+    // ponytail: hex-decode SSID if client-side encoding was used (supports non-ASCII SSIDs)
+    char enc[8] = {0};
+    get_form_field(buf, "enc", enc, sizeof(enc));
+    if (strcmp(enc, "hex") == 0) {
+        hex_decode(ssid);
+    }
 
     ESP_LOGI(TAG, "Configuring WiFi: SSID='%s'", ssid);
 
