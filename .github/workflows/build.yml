@@ -1,0 +1,36 @@
+name: Build Firmware
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        idf-version: ["v5.4"]
+        target: ["esp32s3"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Build firmware
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: ${{ matrix.idf-version }}
+          target: ${{ matrix.target }}
+          path: idf_app
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: roon-knob-firmware
+          path: |
+            idf_app/build/roon_knob.bin
+            idf_app/build/bootloader/bootloader.bin
+            idf_app/build/partition_table/partition-table.bin
+            idf_app/build/*.bin
