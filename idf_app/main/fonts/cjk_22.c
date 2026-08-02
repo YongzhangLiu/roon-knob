@@ -1,7 +1,7 @@
 /*******************************************************************************
  * Size: 22 px
  * Bpp: 4
- * Opts: --bpp 4 --size 22 --font /usr/share/fonts/TTF/LXGWWenKaiMono-Medium.ttf --range 0x4E00-0x4FFF --format lvgl -o cjk_512.c
+ * Opts: --bpp 4 --size 22 --font /usr/share/fonts/TTF/LXGWWenKaiMono-Medium.ttf --range 0x4E00-0x4FFF --format lvgl -o cjk_22.c
  ******************************************************************************/
 
 #ifdef LV_LVGL_H_INCLUDE_SIMPLE
@@ -11,11 +11,11 @@
 #endif
 extern const lv_font_t material_icons_28;
 
-#ifndef CJK_512
-#define CJK_512 1
+#ifndef CJK_22
+#define CJK_22 1
 #endif
 
-#if CJK_512
+#if CJK_22
 
 /*-----------------
  *    BITMAPS
@@ -11834,9 +11834,9 @@ static lv_font_fmt_txt_dsc_t font_dsc = {
 
 /*Initialize a public general font descriptor*/
 #if LVGL_VERSION_MAJOR >= 8
-const lv_font_t cjk_512 = {
+const lv_font_t cjk_22 = {
 #else
-lv_font_t cjk_512 = {
+lv_font_t cjk_22 = {
 #endif
     .get_glyph_dsc = lv_font_get_glyph_dsc_fmt_txt,    /*Function pointer to get glyph's data*/
     .get_glyph_bitmap = lv_font_get_bitmap_fmt_txt,    /*Function pointer to get glyph's bitmap*/
@@ -11858,5 +11858,5 @@ lv_font_t cjk_512 = {
 
 
 
-#endif /*#if CJK_512*/
+#endif /*#if CJK_22*/
 
